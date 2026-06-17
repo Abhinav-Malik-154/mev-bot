@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment — NEVER commit this
+.env
+
+# Database files
+*.db
+data/
+
+# Logs
+logs/
+*.log
+
+# Foundry build artifacts
+cache/
+out/
+broadcast/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
