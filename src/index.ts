@@ -6,18 +6,22 @@
  * 1. Validate environment configuration
  * 2. Initialize SQLite database
  * 3. Start metrics auto-logging
- * 4. Start mempool monitor — watches for Uniswap V2 swaps (Phase 2)
- * 5. Run opportunity detector on each detected swap (Phase 3)
- * 6. Build transaction bundle and simulate on Anvil fork (Phase 4)
+ * 4. Create HTTP provider + executor wallet
+ * 5. Create Flashbots relay client (Phase 5)
+ * 6. Start mempool monitor — watches for Uniswap V2 swaps (Phase 2)
+ * 7. Run opportunity detector on each detected swap (Phase 3)
+ * 8. Build transaction bundle and simulate on Anvil fork (Phase 4)
+ * 9. Submit confirmed bundles to Flashbots MEV-Share relay (Phase 5)
  *
  * Handles graceful shutdown on SIGINT/SIGTERM to ensure
  * the database is closed cleanly and final metrics are logged.
  */
 
+import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { JsonRpcProvider, Wallet } from 'ethers';
 import { config, validateConfig } from './config.js';
-import { initDatabase, saveOpportunity } from './utils/db.js';
+import { initDatabase, saveOpportunity, saveBundle } from './utils/db.js';
 import { metrics } from './utils/metrics.js';
 import { createModuleLogger } from './utils/logger.js';
 import {
@@ -32,6 +36,11 @@ import {
   formatEthAmount,
 } from './detector/index.js';
 import { buildArbitrageBundle, simulateBundle } from './executor/index.js';
+import {
+  createFlashbotsProvider,
+  submitBundle,
+  bundleTracker,
+} from './flashbots/index.js';
 import type { PendingTransaction } from './types/index.js';
 
 const logger = createModuleLogger('main');
@@ -76,6 +85,14 @@ export async function main(): Promise<void> {
   logger.info({ chainId: config.chainId, relay: config.flashbotsRelayUrl }, 'Bot started');
   logger.info({ address: wallet.address }, 'Executor wallet loaded');
 
+  // Initialise the Flashbots relay client with a fresh reputation signer
+  const flashbotsProvider = await createFlashbotsProvider(httpProvider);
+
+  logger.info(
+    { walletAddress: wallet.address, relay: config.flashbotsRelayUrl },
+    'Full MEV pipeline ready',
+  );
+
   const monitor = createMempoolMonitor();
 
   setupGracefulShutdown(db, monitor);
@@ -95,6 +112,7 @@ export async function main(): Promise<void> {
       'Uniswap V2 swap detected',
     );
 
+    // ── Phase 3: detect arbitrage opportunity ────────────────────────────
     const gasPrice = await getCurrentGasPrice(httpProvider);
     const opportunity = await detectArbitrageOpportunity(swap, httpProvider, gasPrice);
     if (opportunity === null) return;
@@ -119,6 +137,7 @@ export async function main(): Promise<void> {
 
     saveOpportunity(db, opportunity);
 
+    // ── Phase 4: build bundle + Anvil simulation ─────────────────────────
     const currentBlock = await httpProvider.getBlockNumber();
     const targetBlock = currentBlock + 1;
 
@@ -167,12 +186,42 @@ export async function main(): Promise<void> {
       'Simulation successful ✓',
     );
 
-    // Phase 5: Flashbots submission goes here
+    // ── Phase 5: Flashbots MEV-Share submission ──────────────────────────
+    const bundleId = randomUUID();
+    bundleTracker.trackSubmission(bundleId, bundle.targetBlockNumber);
+
+    const result = await submitBundle(bundle, flashbotsProvider, wallet, httpProvider);
+
+    bundleTracker.recordResult(bundleId, result);
+    saveBundle(db, { ...result, id: bundleId });
+
+    if (result.success) {
+      metrics.addProfit(result.profitWei);
+      logger.info(
+        {
+          profitEth: formatEthAmount(result.profitWei, 6),
+          bundleHash: result.bundleHash,
+          blockNumber: result.blockNumber,
+        },
+        'Bundle included — profit captured!',
+      );
+    } else {
+      logger.warn({ error: result.error }, 'Bundle not included');
+    }
+
+    const stats = bundleTracker.getStats();
+    logger.info(
+      { successRate: stats.successRate, totalProfitEth: stats.totalProfitEth },
+      'Bundle stats updated',
+    );
+
+    // Alert if we are consistently losing to competitors
+    bundleTracker.isConsistentlyOutbid();
   });
 
-  logger.info('Phase 4 active ✓ — building and simulating bundles');
+  logger.info('Phase 5 active ✓ — submitting bundles to Flashbots MEV-Share');
 
-  await new Promise<void>(() => undefined); // keeps process alive — removed in Phase 5
+  await new Promise<void>(() => undefined); // keeps process alive — removed in Phase 6
 }
 
 main().catch((err: unknown) => {
