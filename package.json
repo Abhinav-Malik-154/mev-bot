@@ -10,7 +10,11 @@
     "build": "tsc",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src",
-    "test:contracts": "forge test --root contracts -vvv"
+    "test:contracts": "cd contracts && forge test -vvv",
+    "test:contracts:fuzz": "cd contracts && forge test --match-test fuzz -vvv",
+    "coverage": "cd contracts && forge coverage",
+    "deploy:sepolia": "tsx scripts/deploy.ts",
+    "build:contracts": "cd contracts && forge build"
   },
   "dependencies": {
     "ethers": "^6.13.0",
