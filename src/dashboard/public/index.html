@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<!--
+  MEV Searcher Bot — Live Dashboard
+  Single-file frontend: HTML + CSS + vanilla JS
+  No build step, no framework, no dependencies except Google Fonts.
+  Connects to WebSocket on port 3000 for real-time state pushes.
+  Reconnects automatically on disconnect.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ MEV Searcher Bot — Live Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    /* ── Reset ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design tokens ─────────────────────────────────────────────── */
+    :root {
+      --bg-primary:     #0a0a0a;
+      --bg-card:        #111111;
+      --bg-card-hover:  #161616;
+      --border:         #1e1e1e;
+      --accent-green:   #00ff88;
+      --accent-blue:    #0088ff;
+      --accent-yellow:  #ffaa00;
+      --accent-red:     #ff4444;
+      --text-primary:   #ffffff;
+      --text-secondary: #888888;
+      --text-muted:     #444444;
+      --font:           'JetBrains Mono', 'Courier New', monospace;
+    }
+
+    /* ── Base ──────────────────────────────────────────────────────── */
+    html, body {
+      min-height: 100vh;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ── Scrollbar ─────────────────────────────────────────────────── */
+    ::-webkit-scrollbar            { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track      { background: var(--bg-primary); }
+    ::-webkit-scrollbar-thumb      { background: #2a2a2a; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover{ background: var(--text-muted); }
+    * { scrollbar-width: thin; scrollbar-color: #2a2a2a var(--bg-primary); }
+
+    /* ── Header ────────────────────────────────────────────────────── */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      height: 58px;
+      background: rgba(10, 10, 10, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .logo {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--accent-green);
+      letter-spacing: 0.06em;
+      text-shadow: 0 0 24px rgba(0, 255, 136, 0.35);
+      white-space: nowrap;
+    }
+
+    .header-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+      transition: background 0.4s ease, box-shadow 0.4s ease;
+    }
+
+    .status-dot.live {
+      background: var(--accent-green);
+      box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.5);
+      animation: pulse-ring 2.2s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+    }
+
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0   rgba(0, 255, 136, 0.5); }
+      70%  { box-shadow: 0 0 0 8px rgba(0, 255, 136, 0);   }
+      100% { box-shadow: 0 0 0 0   rgba(0, 255, 136, 0);   }
+    }
+
+    #conn-label { color: var(--text-muted); transition: color 0.3s ease; }
+    #conn-label.live { color: var(--accent-green); }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+    }
+
+    .chain-badge {
+      padding: 3px 9px;
+      border: 1px solid rgba(0, 136, 255, 0.3);
+      border-radius: 4px;
+      color: var(--accent-blue);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      background: rgba(0, 136, 255, 0.06);
+      white-space: nowrap;
+    }
+
+    #wallet-display {
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    /* ── Main layout ───────────────────────────────────────────────── */
+    main {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 28px 28px 12px;
+    }
+
+    /* ── Metric cards ──────────────────────────────────────────────── */
+    .metrics-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .secondary-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px 24px 18px;
+      transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease,
+                  transform 0.15s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.04), transparent);
+    }
+
+    .card:hover {
+      background: var(--bg-card-hover);
+      border-color: #252525;
+      box-shadow: 0 0 24px rgba(0, 255, 136, 0.045);
+      transform: translateY(-1px);
+    }
+
+    .card-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    .card-value {
+      font-size: 34px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: -0.02em;
+    }
+
+    .cv-blue   { color: var(--accent-blue); }
+    .cv-green  { color: var(--accent-green); }
+    .cv-yellow { color: var(--accent-yellow); }
+
+    .card-value.flash {
+      animation: flash-num 0.55s ease-out;
+    }
+
+    @keyframes flash-num {
+      0%   { filter: brightness(1); }
+      35%  { filter: brightness(2.2) drop-shadow(0 0 10px currentColor); }
+      100% { filter: brightness(1); }
+    }
+
+    .card-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Table sections ────────────────────────────────────────────── */
+    .table-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 22px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.01);
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .section-count {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead th {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--bg-card);
+      padding: 10px 22px;
+      text-align: left;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid rgba(30, 30, 30, 0.8);
+      transition: background 0.15s ease;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+    tbody td {
+      padding: 12px 22px;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    /* left-border accent on first cell */
+    tr.row-green td:first-child {
+      border-left: 2px solid var(--accent-green);
+      padding-left: 20px;
+    }
+    tr.row-red td:first-child {
+      border-left: 2px solid var(--accent-red);
+      padding-left: 20px;
+    }
+
+    /* ── Confidence bar ────────────────────────────────────────────── */
+    .conf-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .conf-track {
+      width: 72px;
+      height: 5px;
+      background: #1e1e1e;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .conf-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease, background 0.3s ease;
+    }
+    .conf-pct {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 28px;
+    }
+
+    /* ── Status badges ─────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .badge-ok    { background: rgba(0,255,136,0.09); color: var(--accent-green); border: 1px solid rgba(0,255,136,0.18); }
+    .badge-fail  { background: rgba(255,68,68,0.09);  color: var(--accent-red);   border: 1px solid rgba(255,68,68,0.18);  }
+    .badge-skip  { background: rgba(136,136,136,0.09);color: var(--text-muted);   border: 1px solid rgba(136,136,136,0.18);}
+
+    /* ── Cell helpers ──────────────────────────────────────────────── */
+    .tc-muted  { color: var(--text-muted);     font-size: 12px; }
+    .tc-mono   { font-family: var(--font); font-size: 12px; color: var(--text-secondary); cursor: default; }
+    .tc-green  { color: var(--accent-green); }
+    .tc-red    { color: var(--accent-red); }
+    .tc-pair   { color: var(--text-primary); }
+    .tc-sep    { color: var(--text-muted); margin: 0 5px; }
+
+    /* ── Empty state ───────────────────────────────────────────────── */
+    .empty {
+      padding: 40px 22px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+    }
+
+    .empty-icon {
+      font-size: 22px;
+      margin-bottom: 10px;
+      opacity: 0.25;
+      display: block;
+      animation: breathe 3s ease-in-out infinite;
+    }
+
+    @keyframes breathe {
+      0%, 100% { opacity: 0.15; transform: scale(1);    }
+      50%       { opacity: 0.35; transform: scale(1.06); }
+    }
+
+    /* ── Footer ────────────────────────────────────────────────────── */
+    footer {
+      text-align: center;
+      padding: 22px 28px 28px;
+      color: var(--text-muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      border-top: 1px solid var(--border);
+    }
+
+    footer a {
+      color: var(--accent-blue);
+      text-decoration: none;
+      transition: opacity 0.2s ease;
+    }
+
+    footer a:hover { opacity: 0.75; text-decoration: underline; }
+
+    /* ── Responsive ────────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .metrics-row   { grid-template-columns: repeat(2, 1fr); }
+      .secondary-row { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 600px) {
+      header        { padding: 0 16px; }
+      main          { padding: 16px 16px 8px; }
+      #wallet-display { display: none; }
+      .metrics-row   { grid-template-columns: 1fr 1fr; gap: 10px; }
+      .secondary-row { grid-template-columns: 1fr 1fr; gap: 10px; }
+      .card          { padding: 16px 16px 14px; }
+      .card-value    { font-size: 26px; }
+    }
+
+    @media (max-width: 420px) {
+      .metrics-row   { grid-template-columns: 1fr; }
+      .secondary-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">⚡ MEV SEARCHER BOT</div>
+
+  <div class="header-status">
+    <div class="status-dot" id="status-dot"></div>
+    <span id="conn-label">CONNECTING</span>
+  </div>
+
+  <div class="header-right">
+    <span class="chain-badge" id="chain-badge">CHAIN —</span>
+    <span id="wallet-display">—</span>
+  </div>
+</header>
+
+<!-- ── Main ────────────────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- Primary metric cards -->
+  <div class="metrics-row">
+    <div class="card">
+      <div class="card-label">TXs Scanned</div>
+      <div class="card-value cv-blue" id="m-txs">0</div>
+      <div class="card-sub">Mempool transactions</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Opportunities</div>
+      <div class="card-value cv-green" id="m-opps">0</div>
+      <div class="card-sub">Profitable arb detected</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Bundles Submitted</div>
+      <div class="card-value cv-yellow" id="m-bundles">0</div>
+      <div class="card-sub">Sent to Flashbots relay</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Total Profit</div>
+      <div class="card-value cv-green" id="m-profit">0.000000 Ξ</div>
+      <div class="card-sub">Net ETH captured</div>
+    </div>
+  </div>
+
+  <!-- Secondary metric cards -->
+  <div class="secondary-row">
+    <div class="card">
+      <div class="card-label">Success Rate</div>
+      <div class="card-value cv-green" id="m-rate">0.00%</div>
+      <div class="card-sub">Included / submitted</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Bundles Included</div>
+      <div class="card-value cv-yellow" id="m-included">0</div>
+      <div class="card-sub">Confirmed on-chain</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Uptime</div>
+      <div class="card-value cv-green" id="m-uptime">00:00:00</div>
+      <div class="card-sub">Continuous operation</div>
+    </div>
+  </div>
+
+  <!-- Opportunities table -->
+  <div class="table-section">
+    <div class="section-header">
+      <span class="section-title">Recent Opportunities</span>
+      <span class="section-count" id="opp-count">0 detected</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Token Pair</th>
+            <th>Net Profit</th>
+            <th>Confidence</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="opp-tbody">
+          <tr>
+            <td colspan="5">
+              <div class="empty">
+                <span class="empty-icon">◈</span>
+                Monitoring mempool... waiting for opportunities
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Bundles table -->
+  <div class="table-section">
+    <div class="section-header">
+      <span class="section-title">Recent Bundles</span>
+      <span class="section-count" id="bundle-count">0 submitted</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Bundle Hash</th>
+            <th>Profit</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="bundle-tbody">
+          <tr>
+            <td colspan="4">
+              <div class="empty">
+                <span class="empty-icon">◈</span>
+                No bundles submitted yet
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<footer>
+  Built with&nbsp;<a href="https://docs.flashbots.net/flashbots-mev-share/introduction" target="_blank" rel="noopener">Flashbots MEV-Share</a>&nbsp;+&nbsp;Uniswap V2/V3&nbsp;·&nbsp;Sepolia Testnet
+  &nbsp;·&nbsp;
+  <a href="https://github.com/your-username/mev-searcher-bot" target="_blank" rel="noopener">GitHub</a>
+</footer>
+
+<!-- ── Client-side JS ──────────────────────────────────────────────────────── -->
+<script>
+  'use strict'
+
+  // ── Constants ─────────────────────────────────────────────────────────────
+  var WS_PORT      = 3000
+  var RECONNECT_MS = 3000
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  var ws             = null
+  var reconnectTimer = null
+  var botStartEpoch  = null   // ms epoch when bot started — derived from state
+  var uptimeTicker   = null
+
+  // ── WebSocket lifecycle ────────────────────────────────────────────────────
+  function connect() {
+    var host  = window.location.hostname || 'localhost'
+    var wsUrl = 'ws://' + host + ':' + WS_PORT
+
+    ws = new WebSocket(wsUrl)
+
+    ws.onopen = function () {
+      clearTimeout(reconnectTimer)
+      setConnectionUI(true)
+    }
+
+    ws.onmessage = function (evt) {
+      try {
+        var msg = JSON.parse(evt.data)
+        if (msg && msg.type === 'state_update') {
+          applyState(msg.data)
+        }
+      } catch (e) {
+        console.error('[dashboard] Failed to parse WS message', e)
+      }
+    }
+
+    ws.onclose = function () {
+      setConnectionUI(false)
+      reconnectTimer = setTimeout(connect, RECONNECT_MS)
+    }
+
+    ws.onerror = function () {
+      ws.close()
+    }
+  }
+
+  function setConnectionUI(connected) {
+    var dot   = document.getElementById('status-dot')
+    var label = document.getElementById('conn-label')
+    if (connected) {
+      dot.classList.add('live')
+      label.textContent = 'LIVE'
+      label.classList.add('live')
+    } else {
+      dot.classList.remove('live')
+      label.textContent = 'CONNECTING'
+      label.classList.remove('live')
+    }
+  }
+
+  // ── State application ──────────────────────────────────────────────────────
+  function applyState(s) {
+    if (!s) return
+
+    // Anchor uptime ticker once on first received state
+    if (botStartEpoch === null && typeof s.uptimeSeconds === 'number') {
+      botStartEpoch = Date.now() - s.uptimeSeconds * 1000
+      if (uptimeTicker === null) {
+        uptimeTicker = setInterval(tickUptime, 1000)
+      }
+    }
+
+    // Primary metrics
+    anim('m-txs',     fmtNum(s.txScanned))
+    anim('m-opps',    fmtNum(s.opportunitiesFound))
+    anim('m-bundles', fmtNum(s.bundlesSubmitted))
+    anim('m-profit',  (s.totalProfitEth || '0.000000') + ' Ξ')
+
+    // Secondary metrics
+    anim('m-rate',     s.successRate  || '0.00%')
+    anim('m-included', fmtNum(s.bundlesIncluded))
+
+    // Header
+    var chainEl  = document.getElementById('chain-badge')
+    var walletEl = document.getElementById('wallet-display')
+    if (s.chainId) chainEl.textContent = 'CHAIN ' + s.chainId
+    walletEl.textContent = s.walletAddress ? fmtAddr(s.walletAddress) : '—'
+    walletEl.title       = s.walletAddress || ''
+
+    // Tables
+    renderOpps(Array.isArray(s.recentOpportunities) ? s.recentOpportunities : [])
+    renderBundles(Array.isArray(s.recentBundles) ? s.recentBundles : [])
+
+    // Sub-header counts
+    document.getElementById('opp-count').textContent =
+      fmtNum(s.opportunitiesFound || 0) + ' detected'
+    document.getElementById('bundle-count').textContent =
+      fmtNum(s.bundlesSubmitted || 0) + ' submitted'
+  }
+
+  // ── Live uptime ticker ─────────────────────────────────────────────────────
+  function tickUptime() {
+    if (botStartEpoch === null) return
+    var secs = Math.floor((Date.now() - botStartEpoch) / 1000)
+    var h = Math.floor(secs / 3600)
+    var m = Math.floor((secs % 3600) / 60)
+    var s = secs % 60
+    var el = document.getElementById('m-uptime')
+    if (el) el.textContent = pad2(h) + ':' + pad2(m) + ':' + pad2(s)
+  }
+
+  // ── Table renderers ────────────────────────────────────────────────────────
+  function renderOpps(opps) {
+    var tbody = document.getElementById('opp-tbody')
+    var rows  = opps.slice(0, 10)
+
+    if (rows.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="5"><div class="empty">' +
+        '<span class="empty-icon">◈</span>' +
+        'Monitoring mempool… waiting for opportunities</div></td></tr>'
+      return
+    }
+
+    tbody.innerHTML = rows.map(function (o) {
+      var pct      = Math.round((o.confidence || 0) * 100)
+      var barColor = o.confidence > 0.7
+        ? 'var(--accent-green)'
+        : o.confidence > 0.4
+          ? 'var(--accent-yellow)'
+          : 'var(--accent-red)'
+      var profSign  = parseFloat(o.netProfitEth) >= 0 ? '+' : ''
+      var profClass = o.isProfitable ? 'tc-green' : 'tc-red'
+      var rowClass  = o.isProfitable ? 'row-green' : 'row-red'
+      var badge     = o.isProfitable
+        ? '<span class="badge badge-ok">PROFITABLE</span>'
+        : '<span class="badge badge-skip">SKIPPED</span>'
+
+      return '<tr class="' + rowClass + '">' +
+        '<td class="tc-muted">'  + fmtTime(o.timestamp) + '</td>' +
+        '<td class="tc-pair">'   + fmtAddr(o.tokenA) + '<span class="tc-sep">→</span>' + fmtAddr(o.tokenB) + '</td>' +
+        '<td class="' + profClass + '">' + profSign + (o.netProfitEth || '0.000000') + ' Ξ</td>' +
+        '<td><div class="conf-wrap">' +
+          '<div class="conf-track"><div class="conf-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>' +
+          '<span class="conf-pct">' + pct + '%</span>' +
+        '</div></td>' +
+        '<td>' + badge + '</td>' +
+        '</tr>'
+    }).join('')
+  }
+
+  function renderBundles(bundles) {
+    var tbody = document.getElementById('bundle-tbody')
+    var rows  = bundles.slice(0, 10)
+
+    if (rows.length === 0) {
+      tbody.innerHTML =
+        '<tr><td colspan="4"><div class="empty">' +
+        '<span class="empty-icon">◈</span>' +
+        'No bundles submitted yet</div></td></tr>'
+      return
+    }
+
+    tbody.innerHTML = rows.map(function (b) {
+      var statusBadge = b.success
+        ? '<span class="badge badge-ok">INCLUDED</span>'
+        : '<span class="badge badge-fail">FAILED</span>'
+      var profitCell = b.success
+        ? '<span class="tc-green">+' + b.profitEth + ' Ξ</span>'
+        : '<span class="tc-muted">—</span>'
+      var hashText  = b.bundleHash ? fmtHash(b.bundleHash) : '—'
+      var hashTitle = b.bundleHash || ''
+
+      return '<tr>' +
+        '<td class="tc-muted">'  + fmtTime(b.timestamp) + '</td>' +
+        '<td class="tc-mono" title="' + hashTitle + '">' + hashText + '</td>' +
+        '<td>' + profitCell + '</td>' +
+        '<td>' + statusBadge + '</td>' +
+        '</tr>'
+    }).join('')
+  }
+
+  // ── Animated value update ──────────────────────────────────────────────────
+  function anim(id, newVal) {
+    var el = document.getElementById(id)
+    if (!el) return
+    var str = String(newVal)
+    if (el.textContent !== str) {
+      el.textContent = str
+      el.classList.remove('flash')
+      void el.offsetWidth   // force reflow to restart animation
+      el.classList.add('flash')
+    }
+  }
+
+  // ── Formatting helpers ─────────────────────────────────────────────────────
+  function fmtNum(n) {
+    if (n === undefined || n === null) return '0'
+    return Number(n).toLocaleString()
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '—'
+    var delta = Math.floor((Date.now() - ts) / 1000)
+    if (delta < 5)    return 'just now'
+    if (delta < 60)   return delta + 's ago'
+    if (delta < 3600) return Math.floor(delta / 60) + 'm ago'
+    return Math.floor(delta / 3600) + 'h ago'
+  }
+
+  function fmtAddr(addr) {
+    if (!addr || addr.length < 10) return addr || '—'
+    return addr.slice(0, 6) + '…' + addr.slice(-4)
+  }
+
+  function fmtHash(hash) {
+    if (!hash) return '—'
+    return hash.slice(0, 16) + '…'
+  }
+
+  function pad2(n) { return ('0' + n).slice(-2) }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  connect()
+</script>
+</body>
+</html>

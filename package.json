@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Production-grade MEV searcher bot with Flashbots MEV-Share integration, Uniswap V2/V3 arbitrage detection, and atomic on-chain execution via FlashExecutor.sol",
   "type": "module",
-  "engines": { "node": ">=20.0.0" },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
@@ -17,25 +19,30 @@
     "build:contracts": "cd contracts && forge build"
   },
   "dependencies": {
-    "ethers": "^6.13.0",
     "@flashbots/ethers-provider-bundle": "^0.6.2",
+    "@types/ws": "^8.18.1",
+    "axios": "^1.6.8",
     "better-sqlite3": "^9.4.3",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
     "pino": "^8.19.0",
     "pino-pretty": "^11.0.0",
-    "dotenv": "^16.4.5",
-    "axios": "^1.6.8"
+    "ws": "^8.19.0"
   },
   "devDependencies": {
-    "typescript": "^5.4.5",
-    "@types/node": "^20.12.7",
     "@types/better-sqlite3": "^7.6.10",
-    "tsx": "^4.7.3",
-    "eslint": "^8.57.0",
+    "@types/node": "^20.12.7",
     "@typescript-eslint/eslint-plugin": "^7.7.1",
     "@typescript-eslint/parser": "^7.7.1",
-    "prettier": "^3.2.5"
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "tsx": "^4.7.3",
+    "typescript": "^5.4.5"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "esbuild"]
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   }
 }

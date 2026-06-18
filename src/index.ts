@@ -8,10 +8,11 @@
  * 3. Start metrics auto-logging
  * 4. Create HTTP provider + executor wallet
  * 5. Create Flashbots relay client (Phase 5)
- * 6. Start mempool monitor — watches for Uniswap V2 swaps (Phase 2)
- * 7. Run opportunity detector on each detected swap (Phase 3)
- * 8. Build transaction bundle and simulate on Anvil fork (Phase 4)
- * 9. Submit confirmed bundles to Flashbots MEV-Share relay (Phase 5)
+ * 6. Start live dashboard server on port 3000 (Phase 7)
+ * 7. Start mempool monitor — watches for Uniswap V2 swaps (Phase 2)
+ * 8. Run opportunity detector on each detected swap (Phase 3)
+ * 9. Build transaction bundle and simulate on Anvil fork (Phase 4)
+ * 10. Submit confirmed bundles to Flashbots MEV-Share relay (Phase 5)
  *
  * Handles graceful shutdown on SIGINT/SIGTERM to ensure
  * the database is closed cleanly and final metrics are logged.
@@ -41,6 +42,7 @@ import {
   submitBundle,
   bundleTracker,
 } from './flashbots/index.js';
+import { createDashboardServer, dashboardState, DashboardServer } from './dashboard/index.js';
 import type { PendingTransaction } from './types/index.js';
 
 const logger = createModuleLogger('main');
@@ -55,10 +57,16 @@ const BANNER = `
          Flashbots MEV-Share | Uniswap V2/V3 Arbitrage
 `;
 
-function setupGracefulShutdown(database: Database.Database, monitor: MempoolMonitor): void {
+function setupGracefulShutdown(
+  database: Database.Database,
+  monitor: MempoolMonitor,
+  dashboardServer: DashboardServer,
+): void {
   const shutdown = (): void => {
     logger.info('Shutdown signal received — draining...');
     void monitor.stop();
+    void dashboardServer.stop();
+    dashboardState.setBotStatus('stopped');
     logger.info(metrics.getSummary(), 'Final metrics');
     metrics.stopAutoLog();
     database.close();
@@ -93,9 +101,24 @@ export async function main(): Promise<void> {
     'Full MEV pipeline ready',
   );
 
+  // ── Phase 7: start live dashboard ────────────────────────────────────────
+  const dashboardServer = createDashboardServer();
+  await dashboardServer.start();
+  dashboardState.setBotStatus('running');
+  dashboardState.setWalletInfo(wallet.address, config.chainId);
+
   const monitor = createMempoolMonitor();
 
-  setupGracefulShutdown(db, monitor);
+  setupGracefulShutdown(db, monitor, dashboardServer);
+
+  // Push metrics to dashboard every 5 s (separate from the 60 s log interval)
+  const metricsInterval = setInterval((): void => {
+    dashboardState.updateMetrics(metrics.getSummary());
+    dashboardServer.broadcastUpdate();
+  }, 5_000);
+
+  // Prevent the interval itself from blocking the process exit path
+  metricsInterval.unref();
 
   await monitor.start(async (tx: PendingTransaction): Promise<void> => {
     if (!isUniswapV2Swap(tx)) return;
@@ -136,6 +159,10 @@ export async function main(): Promise<void> {
     );
 
     saveOpportunity(db, opportunity);
+
+    // Push opportunity to dashboard immediately
+    dashboardState.addOpportunity(opportunity);
+    dashboardServer.broadcastUpdate();
 
     // ── Phase 4: build bundle + Anvil simulation ─────────────────────────
     const currentBlock = await httpProvider.getBlockNumber();
@@ -195,6 +222,10 @@ export async function main(): Promise<void> {
     bundleTracker.recordResult(bundleId, result);
     saveBundle(db, { ...result, id: bundleId });
 
+    // Push bundle result to dashboard immediately
+    dashboardState.addBundle({ ...result, id: bundleId });
+    dashboardServer.broadcastUpdate();
+
     if (result.success) {
       metrics.addProfit(result.profitWei);
       logger.info(
@@ -219,9 +250,9 @@ export async function main(): Promise<void> {
     bundleTracker.isConsistentlyOutbid();
   });
 
-  logger.info('Phase 5 active ✓ — submitting bundles to Flashbots MEV-Share');
+  logger.info('Phase 7 active ✓ — dashboard running at http://localhost:3000');
 
-  await new Promise<void>(() => undefined); // keeps process alive — removed in Phase 6
+  await new Promise<void>(() => undefined); // keeps process alive
 }
 
 main().catch((err: unknown) => {
