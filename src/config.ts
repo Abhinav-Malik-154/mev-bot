@@ -43,6 +43,18 @@ export const config: BotConfig = {
 
 export function validateConfig(): void {
   /* eslint-disable no-console -- intentional: runs before pino logger is initialised */
+
+  // Validate private key: must be 64 hex chars (with or without 0x prefix)
+  const rawKey = config.executorPrivateKey.startsWith('0x')
+    ? config.executorPrivateKey.slice(2)
+    : config.executorPrivateKey;
+  if (!/^[0-9a-fA-F]{64}$/.test(rawKey)) {
+    throw new Error(
+      'EXECUTOR_PRIVATE_KEY is not a valid 32-byte hex private key. ' +
+      'Set it to a real 64-character hex key in .env (never commit real keys to git).',
+    );
+  }
+
   const keyPreview = config.executorPrivateKey.slice(-4);
   console.info('✓ Chain ID: ' + config.chainId);
   console.info('✓ Relay URL: ' + config.flashbotsRelayUrl);
