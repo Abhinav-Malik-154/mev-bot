@@ -226,7 +226,7 @@ async function waitForBlock(
  * solely to identify this session to the relay for reputation tracking.
  * A long-running bot would persist this key across restarts to build reputation.
  */
-export async function createFlashbotsProvider(
+export function createFlashbotsProvider(
   _provider: JsonRpcProvider,
 ): Promise<FlashbotsRelayClient> {
   const authSigner = Wallet.createRandom();
@@ -234,7 +234,7 @@ export async function createFlashbotsProvider(
     { relayUrl: config.flashbotsRelayUrl, authAddress: authSigner.address },
     'Flashbots relay client created',
   );
-  return { relayUrl: config.flashbotsRelayUrl, authSigner };
+  return Promise.resolve({ relayUrl: config.flashbotsRelayUrl, authSigner });
 }
 
 /**
