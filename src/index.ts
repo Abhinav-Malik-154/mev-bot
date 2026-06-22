@@ -33,9 +33,11 @@ import {
 } from './mempool/index.js';
 import {
   detectArbitrageOpportunity,
+  detectV2V3CrossArbitrage,
   getCurrentGasPrice,
   formatEthAmount,
 } from './detector/index.js';
+import type { ArbitrageOpportunity } from './types/index.js';
 import { buildArbitrageBundle, simulateBundle } from './executor/index.js';
 import {
   createFlashbotsProvider,
@@ -56,6 +58,19 @@ const BANNER = `
 ╚═╝     ╚═╝╚══════╝  ╚═══╝      ╚═════╝  ╚═════╝    ╚═╝
          Flashbots MEV-Share | Uniswap V2/V3 Arbitrage
 `;
+
+/**
+ * Returns the more profitable of two candidate opportunities by net profit.
+ * Either argument may be null; returns null only when both are null.
+ */
+function pickBestOpportunity(
+  a: ArbitrageOpportunity | null,
+  b: ArbitrageOpportunity | null,
+): ArbitrageOpportunity | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return b.netProfitWei > a.netProfitWei ? b : a;
+}
 
 function setupGracefulShutdown(
   database: Database.Database,
@@ -136,8 +151,19 @@ export async function main(): Promise<void> {
     );
 
     // ── Phase 3: detect arbitrage opportunity ────────────────────────────
+    // Run V2↔V2 (cross-DEX) and V2↔V3 (cross-protocol) detection in parallel,
+    // then take whichever surfaces the higher net profit. V2↔V3 is often the
+    // richer edge because concentrated liquidity diverges further from V2.
     const gasPrice = await getCurrentGasPrice(httpProvider);
-    const opportunity = await detectArbitrageOpportunity(swap, httpProvider, gasPrice);
+    const [v2Opportunity, v2v3Opportunity] = await Promise.all([
+      detectArbitrageOpportunity(swap, httpProvider, gasPrice),
+      detectV2V3CrossArbitrage(swap, httpProvider, gasPrice),
+    ]);
+
+    const opportunity: ArbitrageOpportunity | null = pickBestOpportunity(
+      v2Opportunity,
+      v2v3Opportunity,
+    );
     if (opportunity === null) return;
 
     metrics.incrementOpportunityFound();

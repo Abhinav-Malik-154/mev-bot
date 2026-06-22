@@ -78,6 +78,12 @@ graph TD
 
 ---
 
+### 🦀 Why Rust for the AMM hot path
+
+The constant-product math (`getAmountOut`, price impact, optimal-size search) is the single hottest path in the bot — it runs thousands of times per second when a burst of pending swaps arrives, and any pause there is a missed block. The pure-TypeScript implementation is correct and fast, but it allocates `bigint`s that the V8 garbage collector must eventually reclaim, and a GC pause at the wrong microsecond loses an opportunity to a competitor. The same math is therefore reimplemented in Rust and compiled to WebAssembly (`rust/amm-math`), running with `u128` intermediates and **zero garbage collection** on that critical path. This is a deliberate, surgical use of Rust — not a rewrite of the bot, just the one inner loop where deterministic, GC-free latency actually pays for itself; everything outside it stays in TypeScript where developer velocity matters more.
+
+---
+
 ## ⚙️ How It Works
 
 1. **Mempool Monitoring** — A persistent WebSocket connection subscribes to `eth_subscribe("newPendingTransactions")` on Alchemy's Sepolia endpoint. Every pending transaction hash is fetched and decoded in real time. The monitor auto-reconnects with exponential backoff if the connection drops, so no opportunities are missed during network hiccups.
@@ -274,9 +280,9 @@ The bot runs as a single process on one machine. SQLite with `better-sqlite3` is
 - [x] Flashbots MEV-Share bundle submission
 - [x] FlashExecutor.sol with full test suite
 - [x] Live monitoring dashboard
-- [ ] Uniswap V3 concentrated liquidity support
-- [ ] Multi-hop arbitrage (3+ pools)
-- [ ] Rust WASM module for AMM hot path
+- [x] Uniswap V3 concentrated liquidity support
+- [x] Multi-hop arbitrage (3+ pools)
+- [x] Rust WASM module for AMM hot path
 - [ ] Mainnet deployment with real capital
 - [ ] MEV-Share orderflow integration
 
