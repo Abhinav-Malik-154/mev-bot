@@ -1,12 +1,12 @@
 # ⚡ MEV Searcher Bot
 
 <p align="center">
-  <img src="https://img.shields.io/badge/TypeScript-5.4-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
-  <img src="https://img.shields.io/badge/Solidity-0.8.24-363636?style=for-the-badge&logo=solidity&logoColor=white" />
-  <img src="https://img.shields.io/badge/Foundry-tested-DBEAFE?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Flashbots-MEV--Share-FF6B35?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/Network-Sepolia-7B3FE4?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Node.js-v20+-339933?style=flat-square&logo=node.js&logoColor=white" />
+  <img src="https://img.shields.io/badge/TypeScript-5.4-3178C6?style=flat-square&logo=typescript&logoColor=white" />
+  <img src="https://img.shields.io/badge/Solidity-0.8.24-363636?style=flat-square&logo=solidity&logoColor=white" />
+  <img src="https://img.shields.io/badge/Foundry-latest-FFB000?style=flat-square&logo=foundry&logoColor=white" />
+  <img src="https://img.shields.io/badge/Rust-WASM-000000?style=flat-square&logo=webassembly&logoColor=white" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" />
 </p>
 
 <p align="center">
