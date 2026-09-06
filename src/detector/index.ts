@@ -35,6 +35,7 @@ export {
 } from './multiHop.js';
 export {
   loadWasmMath,
+  isWasmMathLoaded,
   getAmountOutWasm,
   calculatePriceImpactBpsWasm,
   calculateArbitrageProfitWasm,
