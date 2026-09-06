@@ -20,7 +20,7 @@
 
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { JsonRpcProvider, Wallet } from 'ethers';
+import { JsonRpcProvider, Wallet, parseEther } from 'ethers';
 import { config, validateConfig } from './config.js';
 import { initDatabase, saveOpportunity, saveBundle } from './utils/db.js';
 import { metrics } from './utils/metrics.js';
@@ -36,8 +36,11 @@ import {
   detectV2V3CrossArbitrage,
   getCurrentGasPrice,
   formatEthAmount,
+  loadWasmMath,
 } from './detector/index.js';
-import type { ArbitrageOpportunity } from './types/index.js';
+import { findBestTriangularArbitrage, HUB_TOKENS } from './detector/multiHop.js';
+import type { TriangularOpportunity } from './detector/multiHop.js';
+import type { ArbitrageOpportunity, UniswapV2Swap, PendingTransaction } from './types/index.js';
 import { buildArbitrageBundle, simulateBundle } from './executor/index.js';
 import {
   createFlashbotsProvider,
@@ -45,9 +48,18 @@ import {
   bundleTracker,
 } from './flashbots/index.js';
 import { createDashboardServer, dashboardState, DashboardServer } from './dashboard/index.js';
-import type { PendingTransaction } from './types/index.js';
 
 const logger = createModuleLogger('main');
+
+// Canonical WETH hub — the start/end token for the triangular-arbitrage search.
+const WETH_ADDRESS = HUB_TOKENS.find((t) => t.symbol === 'WETH')?.address ?? '';
+
+// Fixed probe size for triangular path evaluation (independent of the victim swap).
+const TRIANGULAR_TEST_AMOUNT = parseEther('0.1');
+
+// A triangular loop runs three swaps (plus approvals), so it burns more gas than
+// a two-leg V2 arb. Used to net the gross estimate for a like-for-like compare.
+const TRIANGULAR_GAS_UNITS = 400_000n;
 
 const BANNER = `
 ███╗   ███╗███████╗██╗   ██╗    ██████╗  ██████╗ ████████╗
@@ -70,6 +82,40 @@ function pickBestOpportunity(
   if (a === null) return b;
   if (b === null) return a;
   return b.netProfitWei > a.netProfitWei ? b : a;
+}
+
+/**
+ * Adapts a triangular result into the shared ArbitrageOpportunity shape so it
+ * competes and logs alongside the two-leg strategies. tokenA/poolA are the
+ * loop's start token and first pool; the first intermediate hop is tokenB.
+ * Returns null when the loop's net profit (gross minus 3-leg gas) is below the
+ * configured threshold, matching how the two-leg detectors self-filter.
+ */
+function triangularToOpportunity(
+  tri: TriangularOpportunity,
+  swap: UniswapV2Swap,
+  gasPriceWei: bigint,
+): ArbitrageOpportunity | null {
+  const gasCostWei = TRIANGULAR_GAS_UNITS * gasPriceWei;
+  const netProfitWei = tri.profitWei - gasCostWei;
+  if (netProfitWei < config.minProfitWei) return null;
+
+  const ratio = gasCostWei > 0n ? Number((netProfitWei * 100n) / gasCostWei) / 300 : 0;
+  return {
+    id: randomUUID(),
+    strategyType: 'triangular',
+    timestamp: Date.now(),
+    swapTx: swap,
+    tokenA: tri.path.tokens[0],
+    tokenB: tri.path.tokens[1],
+    poolA: tri.path.pools[0],
+    poolB: tri.path.pools[1],
+    estimatedProfitWei: tri.profitWei,
+    estimatedGasCostWei: gasCostWei,
+    netProfitWei,
+    isProfitable: true,
+    confidence: Math.max(0, Math.min(ratio, 1)),
+  };
 }
 
 function setupGracefulShutdown(
@@ -97,6 +143,11 @@ export async function main(): Promise<void> {
   process.stdout.write(BANNER + '\n');
 
   validateConfig();
+
+  // Load the Rust WASM AMM math module; the detector uses it as a fast pre-filter
+  // when present and transparently falls back to pure-TS math otherwise.
+  const wasmAvailable = await loadWasmMath();
+  logger.info({ wasmAvailable }, wasmAvailable ? 'WASM math loaded' : 'WASM math unavailable — using TS fallback');
 
   const db = initDatabase(config.dbPath);
 
@@ -151,18 +202,23 @@ export async function main(): Promise<void> {
     );
 
     // ── Phase 3: detect arbitrage opportunity ────────────────────────────
-    // Run V2↔V2 (cross-DEX) and V2↔V3 (cross-protocol) detection in parallel,
-    // then take whichever surfaces the higher net profit. V2↔V3 is often the
-    // richer edge because concentrated liquidity diverges further from V2.
+    // Run all three strategies in parallel and take the highest net profit:
+    //   v2-v2       cross-DEX two-pool arb on the swapped pair
+    //   v2-v3       cross-protocol arb (concentrated liquidity diverges further)
+    //   triangular  WETH→hub→hub→WETH loop, independent of the swapped pair
     const gasPrice = await getCurrentGasPrice(httpProvider);
-    const [v2Opportunity, v2v3Opportunity] = await Promise.all([
+    const [v2Opportunity, v2v3Opportunity, triResult] = await Promise.all([
       detectArbitrageOpportunity(swap, httpProvider, gasPrice),
       detectV2V3CrossArbitrage(swap, httpProvider, gasPrice),
+      findBestTriangularArbitrage(WETH_ADDRESS, TRIANGULAR_TEST_AMOUNT, httpProvider),
     ]);
 
+    const triOpportunity =
+      triResult !== null ? triangularToOpportunity(triResult, swap, gasPrice) : null;
+
     const opportunity: ArbitrageOpportunity | null = pickBestOpportunity(
-      v2Opportunity,
-      v2v3Opportunity,
+      pickBestOpportunity(v2Opportunity, v2v3Opportunity),
+      triOpportunity,
     );
     if (opportunity === null) return;
 
@@ -170,6 +226,7 @@ export async function main(): Promise<void> {
     logger.info(
       {
         id: opportunity.id,
+        strategyType: opportunity.strategyType,
         tokenA: opportunity.tokenA,
         tokenB: opportunity.tokenB,
         estimatedProfitWei: opportunity.estimatedProfitWei.toString(),
@@ -189,6 +246,17 @@ export async function main(): Promise<void> {
     // Push opportunity to dashboard immediately
     dashboardState.addOpportunity(opportunity);
     dashboardServer.broadcastUpdate();
+
+    // The bundle builder assembles two-leg (poolA→poolB) bundles only. A
+    // triangular winner is detected, recorded and surfaced, but 3-leg execution
+    // is not yet wired — stop here rather than build an invalid two-leg bundle.
+    if (opportunity.strategyType === 'triangular') {
+      logger.info(
+        { id: opportunity.id, startToken: opportunity.tokenA, firstHop: opportunity.tokenB },
+        'Triangular opportunity is best — 3-leg execution not yet wired; recorded only',
+      );
+      return;
+    }
 
     // ── Phase 4: build bundle + Anvil simulation ─────────────────────────
     const currentBlock = await httpProvider.getBlockNumber();
