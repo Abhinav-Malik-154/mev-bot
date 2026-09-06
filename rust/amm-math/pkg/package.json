@@ -1,0 +1,13 @@
+{
+  "name": "amm-math",
+  "description": "Rust/WASM constant-product AMM math for the MEV searcher hot path",
+  "version": "0.1.0",
+  "license": "MIT",
+  "files": [
+    "amm_math_bg.wasm",
+    "amm_math.js",
+    "amm_math.d.ts"
+  ],
+  "main": "amm_math.js",
+  "types": "amm_math.d.ts"
+}
