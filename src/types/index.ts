@@ -53,9 +53,14 @@ export interface UniswapV2Swap {
   blockNumber: number;
 }
 
+/** Which detection strategy surfaced an opportunity. */
+export type ArbitrageStrategy = 'v2-v2' | 'v2-v3' | 'triangular';
+
 export interface ArbitrageOpportunity {
   /** Unique identifier for this opportunity (UUID v4) */
   id: string;
+  /** Detection strategy that found this opportunity */
+  strategyType: ArbitrageStrategy;
   /** Unix timestamp in milliseconds when this opportunity was detected */
   timestamp: number;
   /** The victim swap transaction that creates the price impact we exploit */
