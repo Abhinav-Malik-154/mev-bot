@@ -11,10 +11,11 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { ArbitrageOpportunity, BundleResult } from '../types/index.js';
+import type { ArbitrageOpportunity, ArbitrageStrategy, BundleResult } from '../types/index.js';
 
 interface OpportunityRow {
   id: string;
+  strategy_type: string;
   timestamp: number;
   swap_tx: string;
   token_a: string;
@@ -59,6 +60,7 @@ export function initDatabase(dbPath: string): Database.Database {
   db.exec(`
     CREATE TABLE IF NOT EXISTS opportunities (
       id                    TEXT    PRIMARY KEY,
+      strategy_type         TEXT    NOT NULL DEFAULT 'v2-v2',
       timestamp             INTEGER NOT NULL,
       swap_tx               TEXT    NOT NULL,
       token_a               TEXT    NOT NULL,
@@ -93,6 +95,15 @@ export function initDatabase(dbPath: string): Database.Database {
     );
   `);
 
+  // Migration: back-fill strategy_type on databases created before it existed.
+  // CREATE TABLE IF NOT EXISTS never alters a pre-existing table, so add the
+  // column here; the ADD throws "duplicate column" once present — safely ignored.
+  try {
+    db.exec(`ALTER TABLE opportunities ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'v2-v2'`);
+  } catch {
+    // Column already exists — nothing to do.
+  }
+
   return db;
 }
 
@@ -111,14 +122,15 @@ export function saveOpportunity(db: Database.Database, opp: ArbitrageOpportunity
 
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO opportunities
-      (id, timestamp, swap_tx, token_a, token_b, pool_a, pool_b,
+      (id, strategy_type, timestamp, swap_tx, token_a, token_b, pool_a, pool_b,
        estimated_profit_wei, estimated_gas_cost_wei, net_profit_wei,
        is_profitable, confidence)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
     opp.id,
+    opp.strategyType,
     opp.timestamp,
     JSON.stringify(swapTxForStorage),
     opp.tokenA,
@@ -191,6 +203,7 @@ export function getRecentOpportunities(
 
     return {
       id: row.id,
+      strategyType: (row.strategy_type as ArbitrageStrategy | undefined) ?? 'v2-v2',
       timestamp: row.timestamp,
       swapTx: {
         txHash: rawSwapTx.txHash,
