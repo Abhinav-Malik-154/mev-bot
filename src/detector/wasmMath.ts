@@ -94,6 +94,11 @@ function assertU64(...values: bigint[]): void {
   }
 }
 
+/** True once loadWasmMath() has successfully loaded the module. */
+export function isWasmMathLoaded(): boolean {
+  return wasmModule !== undefined;
+}
+
 function requireModule(): WasmMathExports {
   if (wasmModule === undefined) {
     throw new Error('wasmMath: module not loaded — call loadWasmMath() first');
