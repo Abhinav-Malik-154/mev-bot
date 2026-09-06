@@ -46,6 +46,7 @@ import {
   UNISWAP_V3_FACTORY,
   type V3PoolState,
 } from './uniswapV3.js';
+import { getAmountOutWasm, isWasmMathLoaded } from './wasmMath.js';
 import type { UniswapV2Swap, ArbitrageOpportunity, PoolReserves } from '../types/index.js';
 
 const logger = createModuleLogger('arbitrage');
@@ -90,6 +91,36 @@ function estimateGasCost(gasPriceWei: bigint): bigint {
  */
 function estimateV2V3GasCost(gasPriceWei: bigint): bigint {
   return ESTIMATED_V2V3_GAS_UNITS * gasPriceWei;
+}
+
+/**
+ * Cheap WASM pre-filter run before the expensive optimal-amount search.
+ *
+ * Design: WASM for speed on the high-frequency filter, TS bigint for precision
+ * on the final number. A single round-trip quote (buy then sell a probe amount,
+ * both directions) tells us whether a pair has *any* edge before we spend the
+ * 64-iteration findOptimalAmountIn twice. The precise sizing/profit below always
+ * uses the pure-TS getAmountOut.
+ *
+ * Fails open: returns true (do not skip) when WASM is unavailable or any value
+ * exceeds the u64 range it accepts — the filter must never reject a real
+ * opportunity, only cheaply discard hopeless ones.
+ */
+function wasmRoundTripHasEdge(
+  probeIn: bigint,
+  rInA: bigint,
+  rOutA: bigint,
+  rInB: bigint,
+  rOutB: bigint,
+): boolean {
+  if (!isWasmMathLoaded() || probeIn <= 0n) return true;
+  try {
+    const fwd = getAmountOutWasm(getAmountOutWasm(probeIn, rInA, rOutA), rInB, rOutB);
+    const rev = getAmountOutWasm(getAmountOutWasm(probeIn, rInB, rOutB), rInA, rOutA);
+    return fwd > probeIn || rev > probeIn;
+  } catch {
+    return true; // out of u64 range — defer to the precise pure-TS path
+  }
 }
 
 /**
@@ -234,6 +265,12 @@ export async function detectArbitrageOpportunity(
       (primaryReserveIn < altReserveIn ? primaryReserveIn : altReserveIn) / 10n;
     if (maxAmountIn === 0n) continue;
 
+    // Fast WASM gate: skip the pair if a nominal round trip shows no edge.
+    if (!wasmRoundTripHasEdge(maxAmountIn / 2n, primaryReserveIn, primaryReserveOut, altReserveIn, altReserveOut)) {
+      logger.debug({ dex: altFactory.name }, 'WASM pre-filter: no round-trip edge — skipping');
+      continue;
+    }
+
     // Try primary→alt direction
     const { optimalAmountIn: amtA, expectedProfit: profitA } = findOptimalAmountIn(
       primaryReserveIn,
@@ -285,6 +322,7 @@ export async function detectArbitrageOpportunity(
 
     const opportunity: ArbitrageOpportunity = {
       id: randomUUID(),
+      strategyType: 'v2-v2',
       timestamp: Date.now(),
       swapTx: swap,
       tokenA,
@@ -481,6 +519,7 @@ export async function detectV2V3CrossArbitrage(
 
     const opportunity: ArbitrageOpportunity = {
       id: randomUUID(),
+      strategyType: 'v2-v3',
       timestamp: Date.now(),
       swapTx: swap,
       tokenA,
