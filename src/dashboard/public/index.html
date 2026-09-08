@@ -342,6 +342,12 @@
     .badge-fail  { background: rgba(255,68,68,0.09);  color: var(--accent-red);   border: 1px solid rgba(255,68,68,0.18);  }
     .badge-skip  { background: rgba(136,136,136,0.09);color: var(--text-muted);   border: 1px solid rgba(136,136,136,0.18);}
 
+    /* Strategy badges — one hue per detector so the mix of strategies
+       producing opportunities is readable at a glance. */
+    .badge-v2v2  { background: rgba(0,180,255,0.09);  color: #3ec8ff;            border: 1px solid rgba(0,180,255,0.18); }
+    .badge-v2v3  { background: rgba(190,120,255,0.09);color: #c08cff;            border: 1px solid rgba(190,120,255,0.18);}
+    .badge-tri   { background: rgba(255,180,0,0.09);  color: var(--accent-yellow);border: 1px solid rgba(255,180,0,0.18); }
+
     /* ── Cell helpers ──────────────────────────────────────────────── */
     .tc-muted  { color: var(--text-muted);     font-size: 12px; }
     .tc-mono   { font-family: var(--font); font-size: 12px; color: var(--text-secondary); cursor: default; }
@@ -475,6 +481,25 @@
     </div>
   </div>
 
+  <!-- Detection speed cards -->
+  <div class="secondary-row">
+    <div class="card">
+      <div class="card-label">Avg Latency</div>
+      <div class="card-value cv-blue" id="m-lat-avg">—</div>
+      <div class="card-sub">Detection to decision</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Fastest</div>
+      <div class="card-value cv-green" id="m-lat-min">—</div>
+      <div class="card-sub">Best case</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Slowest</div>
+      <div class="card-value cv-yellow" id="m-lat-max">—</div>
+      <div class="card-sub">Worst case</div>
+    </div>
+  </div>
+
   <!-- Opportunities table -->
   <div class="table-section">
     <div class="section-header">
@@ -486,6 +511,7 @@
         <thead>
           <tr>
             <th>Time</th>
+            <th>Strategy</th>
             <th>Token Pair</th>
             <th>Net Profit</th>
             <th>Confidence</th>
@@ -494,7 +520,7 @@
         </thead>
         <tbody id="opp-tbody">
           <tr>
-            <td colspan="5">
+            <td colspan="6">
               <div class="empty">
                 <span class="empty-icon">◈</span>
                 Monitoring mempool... waiting for opportunities
@@ -628,6 +654,19 @@
     anim('m-rate',     s.successRate  || '0.00%')
     anim('m-included', fmtNum(s.bundlesIncluded))
 
+    // Detection speed — until real swaps arrive (sampleCount 0), show a dash
+    // rather than a misleading 0ms.
+    var lat = s.latency || { sampleCount: 0 }
+    if (lat.sampleCount > 0) {
+      anim('m-lat-avg', fmtMs(lat.avgTotalMs))
+      anim('m-lat-min', fmtMs(lat.minTotalMs))
+      anim('m-lat-max', fmtMs(lat.maxTotalMs))
+    } else {
+      anim('m-lat-avg', '—')
+      anim('m-lat-min', '—')
+      anim('m-lat-max', '—')
+    }
+
     // Header
     var chainEl  = document.getElementById('chain-badge')
     var walletEl = document.getElementById('wallet-display')
@@ -658,13 +697,21 @@
   }
 
   // ── Table renderers ────────────────────────────────────────────────────────
+  // Maps a detector's strategyType onto its badge. Unknown values fall back
+  // to v2-v2 so an older row from the database still renders.
+  var STRATEGY_BADGES = {
+    'v2-v2':      { label: 'V2/V2',  cls: 'badge-v2v2' },
+    'v2-v3':      { label: 'V2/V3',  cls: 'badge-v2v3' },
+    'triangular': { label: 'TRI',    cls: 'badge-tri'  }
+  }
+
   function renderOpps(opps) {
     var tbody = document.getElementById('opp-tbody')
     var rows  = opps.slice(0, 10)
 
     if (rows.length === 0) {
       tbody.innerHTML =
-        '<tr><td colspan="5"><div class="empty">' +
+        '<tr><td colspan="6"><div class="empty">' +
         '<span class="empty-icon">◈</span>' +
         'Monitoring mempool… waiting for opportunities</div></td></tr>'
       return
@@ -683,9 +730,11 @@
       var badge     = o.isProfitable
         ? '<span class="badge badge-ok">PROFITABLE</span>'
         : '<span class="badge badge-skip">SKIPPED</span>'
+      var strat     = STRATEGY_BADGES[o.strategyType] || STRATEGY_BADGES['v2-v2']
 
       return '<tr class="' + rowClass + '">' +
         '<td class="tc-muted">'  + fmtTime(o.timestamp) + '</td>' +
+        '<td><span class="badge ' + strat.cls + '">' + strat.label + '</span></td>' +
         '<td class="tc-pair">'   + fmtAddr(o.tokenA) + '<span class="tc-sep">→</span>' + fmtAddr(o.tokenB) + '</td>' +
         '<td class="' + profClass + '">' + profSign + (o.netProfitEth || '0.000000') + ' Ξ</td>' +
         '<td><div class="conf-wrap">' +
@@ -745,6 +794,12 @@
   function fmtNum(n) {
     if (n === undefined || n === null) return '0'
     return Number(n).toLocaleString()
+  }
+
+  // Latency values arrive as sub-ms floats; round to whole ms for display.
+  function fmtMs(n) {
+    if (n === undefined || n === null || isNaN(n)) return '—'
+    return Math.round(Number(n)) + 'ms'
   }
 
   function fmtTime(ts) {
