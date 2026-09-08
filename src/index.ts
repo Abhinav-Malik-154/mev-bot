@@ -24,6 +24,7 @@ import { JsonRpcProvider, Wallet, parseEther } from 'ethers';
 import { config, validateConfig } from './config.js';
 import { initDatabase, saveOpportunity, saveBundle } from './utils/db.js';
 import { metrics } from './utils/metrics.js';
+import { latencyTracker } from './utils/latencyTracker.js';
 import { createModuleLogger } from './utils/logger.js';
 import {
   createMempoolMonitor,
@@ -118,6 +119,35 @@ function triangularToOpportunity(
   };
 }
 
+/**
+ * Records a detected opportunity everywhere it needs to surface: metrics,
+ * structured log, SQLite, and the live dashboard. The dashboard broadcast is
+ * left to the caller so recording several opportunities in one pass produces
+ * a single push rather than one per record.
+ */
+function recordOpportunity(db: Database.Database, opportunity: ArbitrageOpportunity): void {
+  metrics.incrementOpportunityFound();
+  logger.info(
+    {
+      id: opportunity.id,
+      strategyType: opportunity.strategyType,
+      tokenA: opportunity.tokenA,
+      tokenB: opportunity.tokenB,
+      estimatedProfitWei: opportunity.estimatedProfitWei.toString(),
+      netProfitWei: opportunity.netProfitWei.toString(),
+      estimatedGasCostWei: opportunity.estimatedGasCostWei.toString(),
+      confidence: opportunity.confidence,
+      swapTx: {
+        txHash: opportunity.swapTx.txHash,
+        amountIn: opportunity.swapTx.amountIn.toString(),
+      },
+    },
+    'Arbitrage opportunity detected!',
+  );
+  saveOpportunity(db, opportunity);
+  dashboardState.addOpportunity(opportunity);
+}
+
 function setupGracefulShutdown(
   database: Database.Database,
   monitor: MempoolMonitor,
@@ -187,9 +217,11 @@ export async function main(): Promise<void> {
   metricsInterval.unref();
 
   await monitor.start(async (tx: PendingTransaction): Promise<void> => {
+    const timer = latencyTracker.startTimer(tx.hash);
     if (!isUniswapV2Swap(tx)) return;
     const swap = parseUniswapV2Swap(tx);
     if (swap === null) return;
+    timer.checkpoint('parse');
 
     logger.info(
       {
@@ -216,47 +248,51 @@ export async function main(): Promise<void> {
     const triOpportunity =
       triResult !== null ? triangularToOpportunity(triResult, swap, gasPrice) : null;
 
-    const opportunity: ArbitrageOpportunity | null = pickBestOpportunity(
+    // Detection maths complete — record the calculation stage and finish the
+    // sample (finish() logs the full per-tx breakdown at debug level only, to
+    // avoid flooding logs). Push the rolling summary to the dashboard on every
+    // examined swap — profitable or not — so the speed panel stays live.
+    timer.checkpoint('calculation');
+    timer.finish();
+    dashboardState.updateLatency(latencyTracker.getSummary());
+
+    const bestOverall: ArbitrageOpportunity | null = pickBestOpportunity(
       pickBestOpportunity(v2Opportunity, v2v3Opportunity),
       triOpportunity,
     );
-    if (opportunity === null) return;
+    if (bestOverall === null) return;
 
-    metrics.incrementOpportunityFound();
-    logger.info(
-      {
-        id: opportunity.id,
-        strategyType: opportunity.strategyType,
-        tokenA: opportunity.tokenA,
-        tokenB: opportunity.tokenB,
-        estimatedProfitWei: opportunity.estimatedProfitWei.toString(),
-        netProfitWei: opportunity.netProfitWei.toString(),
-        estimatedGasCostWei: opportunity.estimatedGasCostWei.toString(),
-        confidence: opportunity.confidence,
-        swapTx: {
-          txHash: opportunity.swapTx.txHash,
-          amountIn: opportunity.swapTx.amountIn.toString(),
-        },
-      },
-      'Arbitrage opportunity detected!',
-    );
+    recordOpportunity(db, bestOverall);
 
-    saveOpportunity(db, opportunity);
-
-    // Push opportunity to dashboard immediately
-    dashboardState.addOpportunity(opportunity);
-    dashboardServer.broadcastUpdate();
-
-    // The bundle builder assembles two-leg (poolA→poolB) bundles only. A
-    // triangular winner is detected, recorded and surfaced, but 3-leg execution
-    // is not yet wired — stop here rather than build an invalid two-leg bundle.
-    if (opportunity.strategyType === 'triangular') {
+    // The bundle builder assembles two-leg (poolA→poolB) bundles only, so a
+    // triangular winner cannot be executed yet. Bailing out here would also
+    // discard a profitable *two-leg* opportunity found on this same swap,
+    // which is pure lost profit — triangular simply happened to score higher.
+    // So: record the triangular winner, then execute the best two-leg
+    // candidate if one exists.
+    let executable = bestOverall;
+    if (bestOverall.strategyType === 'triangular') {
+      const bestTwoLeg = pickBestOpportunity(v2Opportunity, v2v3Opportunity);
       logger.info(
-        { id: opportunity.id, startToken: opportunity.tokenA, firstHop: opportunity.tokenB },
-        'Triangular opportunity is best — 3-leg execution not yet wired; recorded only',
+        {
+          id: bestOverall.id,
+          startToken: bestOverall.tokenA,
+          firstHop: bestOverall.tokenB,
+          fallbackStrategy: bestTwoLeg?.strategyType ?? null,
+        },
+        bestTwoLeg === null
+          ? 'Triangular opportunity is best — 3-leg execution not yet wired; recorded only'
+          : 'Triangular opportunity is best — 3-leg execution not yet wired; falling back to best two-leg',
       );
-      return;
+      if (bestTwoLeg === null) {
+        dashboardServer.broadcastUpdate();
+        return;
+      }
+      recordOpportunity(db, bestTwoLeg);
+      executable = bestTwoLeg;
     }
+
+    dashboardServer.broadcastUpdate();
 
     // ── Phase 4: build bundle + Anvil simulation ─────────────────────────
     const currentBlock = await httpProvider.getBlockNumber();
@@ -264,7 +300,7 @@ export async function main(): Promise<void> {
 
     let bundle;
     try {
-      bundle = await buildArbitrageBundle(opportunity, wallet, httpProvider, targetBlock);
+      bundle = await buildArbitrageBundle(executable, wallet, httpProvider, targetBlock);
     } catch (err: unknown) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.warn({ reason }, 'Bundle build failed — skipping opportunity');
@@ -280,7 +316,7 @@ export async function main(): Promise<void> {
       bundle,
       config.httpUrl,
       wallet.address,
-      opportunity.tokenB,
+      executable.tokenB,
     );
 
     if (!simulation.success) {
