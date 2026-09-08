@@ -12,13 +12,21 @@
  */
 
 import { formatEther } from 'ethers';
-import type { ArbitrageOpportunity, BundleResult, MetricsSummary } from '../types/index.js';
+import type {
+  ArbitrageOpportunity,
+  ArbitrageStrategy,
+  BundleResult,
+  MetricsSummary,
+} from '../types/index.js';
+import type { LatencySummary } from '../utils/latencyTracker.js';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
 export interface RecentOpportunity {
   readonly id: string;
   readonly timestamp: number;
+  /** Which detector produced this: 'v2-v2', 'v2-v3' or 'triangular' */
+  readonly strategyType: ArbitrageStrategy;
   readonly tokenA: string;
   readonly tokenB: string;
   /** Net profit formatted to 6 decimal places in ETH (may be negative) */
@@ -51,6 +59,12 @@ export interface DashboardState {
   readonly totalProfitEth: string;
   readonly recentOpportunities: RecentOpportunity[];
   readonly recentBundles: RecentBundle[];
+  readonly latency: {
+    avgTotalMs: number;
+    minTotalMs: number;
+    maxTotalMs: number;
+    sampleCount: number;
+  };
   readonly lastUpdated: number;
 }
 
@@ -70,6 +84,12 @@ class DashboardStateManager {
     totalProfitEth: '0.000000',
     recentOpportunities: [],
     recentBundles: [],
+    latency: {
+      avgTotalMs: 0,
+      minTotalMs: 0,
+      maxTotalMs: 0,
+      sampleCount: 0,
+    },
     lastUpdated: Date.now(),
   };
 
@@ -104,6 +124,7 @@ class DashboardStateManager {
     const recent: RecentOpportunity = {
       id: opp.id,
       timestamp: opp.timestamp,
+      strategyType: opp.strategyType,
       tokenA: opp.tokenA,
       tokenB: opp.tokenB,
       netProfitEth: parseFloat(formatEther(opp.netProfitWei)).toFixed(6),
@@ -147,6 +168,24 @@ class DashboardStateManager {
       bundlesSubmitted,
       bundlesIncluded,
       successRate,
+      lastUpdated: Date.now(),
+    };
+  }
+
+  /**
+   * Updates the live latency panel from the tracker's rolling summary.
+   * Only carries the fields the dashboard renders; parse/calculation
+   * averages stay internal to the tracker.
+   */
+  updateLatency(summary: LatencySummary): void {
+    this.state = {
+      ...this.state,
+      latency: {
+        avgTotalMs: summary.avgTotalMs,
+        minTotalMs: summary.minTotalMs,
+        maxTotalMs: summary.maxTotalMs,
+        sampleCount: summary.sampleCount,
+      },
       lastUpdated: Date.now(),
     };
   }
