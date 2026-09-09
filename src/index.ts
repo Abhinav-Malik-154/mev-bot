@@ -24,6 +24,7 @@ import { JsonRpcProvider, Wallet, parseEther } from 'ethers';
 import { config, validateConfig } from './config.js';
 import { initDatabase, saveOpportunity, saveBundle } from './utils/db.js';
 import { metrics } from './utils/metrics.js';
+import { rateLimitBackoff } from './utils/rateLimiter.js';
 import { latencyTracker } from './utils/latencyTracker.js';
 import { createModuleLogger } from './utils/logger.js';
 import {
@@ -49,6 +50,7 @@ import {
   bundleTracker,
 } from './flashbots/index.js';
 import { createDashboardServer, dashboardState, DashboardServer } from './dashboard/index.js';
+import { buildSyntheticOpportunity } from './testing/syntheticOpportunity.js';
 
 const logger = createModuleLogger('main');
 
@@ -105,6 +107,7 @@ function triangularToOpportunity(
   return {
     id: randomUUID(),
     strategyType: 'triangular',
+    synthetic: false,
     timestamp: Date.now(),
     swapTx: swap,
     tokenA: tri.path.tokens[0],
@@ -126,7 +129,12 @@ function triangularToOpportunity(
  * a single push rather than one per record.
  */
 function recordOpportunity(db: Database.Database, opportunity: ArbitrageOpportunity): void {
-  metrics.incrementOpportunityFound();
+  // The opportunities counter means "real arbitrage detected on-chain", so a
+  // fabricated one must not inflate it. The row is still written and shown,
+  // carrying its SYNTHETIC badge — visible, but never counted as a detection.
+  if (!opportunity.synthetic) {
+    metrics.incrementOpportunityFound();
+  }
   logger.info(
     {
       id: opportunity.id,
@@ -169,10 +177,134 @@ function setupGracefulShutdown(
   process.on('SIGTERM', shutdown);
 }
 
+/**
+ * Everything that happens after an opportunity has been chosen: build the
+ * bundle, simulate it on an Anvil fork, and submit through the relay (which
+ * hard-gates on read-only mode).
+ *
+ * Extracted from the mempool callback so the synthetic test harness drives the
+ * exact same code path a real detection does. A harness that ran a parallel
+ * copy of this logic would prove nothing about the real one.
+ */
+async function executeOpportunity(
+  executable: ArbitrageOpportunity,
+  deps: {
+    db: Database.Database;
+    wallet: Wallet;
+    httpProvider: JsonRpcProvider;
+    flashbotsProvider: Awaited<ReturnType<typeof createFlashbotsProvider>>;
+    dashboardServer: DashboardServer;
+  },
+): Promise<void> {
+  const { db, wallet, httpProvider, flashbotsProvider, dashboardServer } = deps;
+
+  // ── Phase 4: build bundle + Anvil simulation ─────────────────────────
+  let currentBlock: number;
+  try {
+    await rateLimitBackoff.waitIfNeeded();
+    currentBlock = await httpProvider.getBlockNumber();
+  } catch (err: unknown) {
+    if (rateLimitBackoff.isRateLimitError(err)) {
+      rateLimitBackoff.recordRateLimit();
+      metrics.incrementRateLimitError();
+      logger.warn({ method: 'eth_blockNumber' }, 'RPC rate limited (429) — skipping opportunity');
+    } else {
+      logger.warn({ err }, 'Failed to fetch current block — skipping opportunity');
+    }
+    return;
+  }
+  const targetBlock = currentBlock + 1;
+
+  let bundle;
+  try {
+    bundle = await buildArbitrageBundle(executable, wallet, httpProvider, targetBlock);
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logger.warn({ reason }, 'Bundle build failed — skipping opportunity');
+    return;
+  }
+
+  logger.info(
+    { targetBlock, txCount: bundle.transactions.length },
+    'Bundle built',
+  );
+
+  const simulation = await simulateBundle(
+    bundle,
+    config.httpUrl,
+    wallet.address,
+    executable.tokenB,
+  );
+
+  if (!simulation.success) {
+    logger.warn(
+      { revertReason: simulation.revertReason },
+      'Simulation failed — skipping',
+    );
+    return;
+  }
+
+  if (simulation.profitWei < config.minProfitWei) {
+    logger.info(
+      { profitEth: formatEthAmount(simulation.profitWei, 6) },
+      'Simulated profit below threshold — skipping',
+    );
+    return;
+  }
+
+  logger.info(
+    {
+      profitEth: formatEthAmount(simulation.profitWei, 6),
+      gasUsed: simulation.gasUsed.toString(),
+    },
+    'Simulation successful ✓',
+  );
+
+  // ── Phase 5: Flashbots MEV-Share submission ──────────────────────────
+  const bundleId = randomUUID();
+  bundleTracker.trackSubmission(bundleId, bundle.targetBlockNumber);
+
+  const result = await submitBundle(bundle, flashbotsProvider, wallet, httpProvider);
+
+  bundleTracker.recordResult(bundleId, result);
+  saveBundle(db, { ...result, id: bundleId });
+
+  // Push bundle result to dashboard immediately
+  dashboardState.addBundle({ ...result, id: bundleId });
+  dashboardServer.broadcastUpdate();
+
+  if (result.success) {
+    metrics.addProfit(result.profitWei);
+    logger.info(
+      {
+        profitEth: formatEthAmount(result.profitWei, 6),
+        bundleHash: result.bundleHash,
+        blockNumber: result.blockNumber,
+      },
+      'Bundle included — profit captured!',
+    );
+  } else {
+    logger.warn({ error: result.error }, 'Bundle not included');
+  }
+
+  const stats = bundleTracker.getStats();
+  logger.info(
+    { successRate: stats.successRate, totalProfitEth: stats.totalProfitEth },
+    'Bundle stats updated',
+  );
+
+  // Alert if we are consistently losing to competitors
+  bundleTracker.isConsistentlyOutbid();
+}
+
 export async function main(): Promise<void> {
   process.stdout.write(BANNER + '\n');
 
   validateConfig();
+
+  // Fault injection is a test tool, wired from config here so rateLimiter
+  // itself stays free of config imports. 0 (the default) is a no-op.
+  rateLimitBackoff.setFaultRate(config.injectFaultRate);
 
   // Load the Rust WASM AMM math module; the detector uses it as a fast pre-filter
   // when present and transparently falls back to pure-TS math otherwise.
@@ -202,6 +334,7 @@ export async function main(): Promise<void> {
   await dashboardServer.start();
   dashboardState.setBotStatus('running');
   dashboardState.setWalletInfo(wallet.address, config.chainId);
+  dashboardState.setReadOnlyMode(config.readOnlyMode);
 
   const monitor = createMempoolMonitor();
 
@@ -294,91 +427,47 @@ export async function main(): Promise<void> {
 
     dashboardServer.broadcastUpdate();
 
-    // ── Phase 4: build bundle + Anvil simulation ─────────────────────────
-    const currentBlock = await httpProvider.getBlockNumber();
-    const targetBlock = currentBlock + 1;
+    await executeOpportunity(executable, {
+      db,
+      wallet,
+      httpProvider,
+      flashbotsProvider,
+      dashboardServer,
+    });
+  });
 
-    let bundle;
-    try {
-      bundle = await buildArbitrageBundle(executable, wallet, httpProvider, targetBlock);
-    } catch (err: unknown) {
-      const reason = err instanceof Error ? err.message : String(err);
-      logger.warn({ reason }, 'Bundle build failed — skipping opportunity');
-      return;
-    }
-
-    logger.info(
-      { targetBlock, txCount: bundle.transactions.length },
-      'Bundle built',
+  // ── Test harness: synthetic opportunity ──────────────────────────────────
+  // Pushes one fabricated, clearly-labelled opportunity through the identical
+  // execution path a real detection uses, so every stage can be observed
+  // connecting. Simulation is expected to reject it — no real arbitrage exists
+  // at these reserves — and that rejection is itself a true result.
+  if (config.injectOpportunity) {
+    const blockNumber = await httpProvider.getBlockNumber();
+    const synthetic = buildSyntheticOpportunity(config.minProfitWei, blockNumber);
+    logger.warn(
+      { id: synthetic.id, netProfitWei: synthetic.netProfitWei.toString() },
+      '🧪 Injecting SYNTHETIC opportunity — flagged synthetic in SQLite and on the dashboard',
     );
 
-    const simulation = await simulateBundle(
-      bundle,
-      config.httpUrl,
-      wallet.address,
-      executable.tokenB,
-    );
-
-    if (!simulation.success) {
-      logger.warn(
-        { revertReason: simulation.revertReason },
-        'Simulation failed — skipping',
-      );
-      return;
-    }
-
-    if (simulation.profitWei < config.minProfitWei) {
-      logger.info(
-        { profitEth: formatEthAmount(simulation.profitWei, 6) },
-        'Simulated profit below threshold — skipping',
-      );
-      return;
-    }
-
-    logger.info(
-      {
-        profitEth: formatEthAmount(simulation.profitWei, 6),
-        gasUsed: simulation.gasUsed.toString(),
-      },
-      'Simulation successful ✓',
-    );
-
-    // ── Phase 5: Flashbots MEV-Share submission ──────────────────────────
-    const bundleId = randomUUID();
-    bundleTracker.trackSubmission(bundleId, bundle.targetBlockNumber);
-
-    const result = await submitBundle(bundle, flashbotsProvider, wallet, httpProvider);
-
-    bundleTracker.recordResult(bundleId, result);
-    saveBundle(db, { ...result, id: bundleId });
-
-    // Push bundle result to dashboard immediately
-    dashboardState.addBundle({ ...result, id: bundleId });
+    recordOpportunity(db, synthetic);
     dashboardServer.broadcastUpdate();
 
-    if (result.success) {
-      metrics.addProfit(result.profitWei);
-      logger.info(
-        {
-          profitEth: formatEthAmount(result.profitWei, 6),
-          bundleHash: result.bundleHash,
-          blockNumber: result.blockNumber,
-        },
-        'Bundle included — profit captured!',
-      );
-    } else {
-      logger.warn({ error: result.error }, 'Bundle not included');
+    try {
+      await executeOpportunity(synthetic, {
+        db,
+        wallet,
+        httpProvider,
+        flashbotsProvider,
+        dashboardServer,
+      });
+    } catch (err: unknown) {
+      // A synthetic opportunity failing downstream is an expected outcome, not
+      // a crash: log which stage stopped it and carry on monitoring.
+      logger.warn({ err }, '🧪 Synthetic opportunity stopped in the pipeline — see stage logs above');
     }
 
-    const stats = bundleTracker.getStats();
-    logger.info(
-      { successRate: stats.successRate, totalProfitEth: stats.totalProfitEth },
-      'Bundle stats updated',
-    );
-
-    // Alert if we are consistently losing to competitors
-    bundleTracker.isConsistentlyOutbid();
-  });
+    logger.info('🧪 Synthetic injection complete — pipeline traversal observed');
+  }
 
   logger.info('Phase 7 active ✓ — dashboard running at http://localhost:3000');
 
