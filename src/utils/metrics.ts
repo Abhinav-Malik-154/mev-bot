@@ -18,6 +18,7 @@ class BotMetrics {
   private txScanned = 0;
   private opportunitiesFound = 0;
   private bundlesSubmitted = 0;
+  private rateLimitErrors = 0;
   private totalProfitWei = 0n;
   private readonly startTime = Date.now();
   private intervalHandle: NodeJS.Timeout | undefined = undefined;
@@ -32,6 +33,11 @@ class BotMetrics {
 
   incrementBundleSubmitted(): void {
     this.bundlesSubmitted += 1;
+  }
+
+  /** Records an RPC rate-limit (HTTP 429) we caught and survived. */
+  incrementRateLimitError(): void {
+    this.rateLimitErrors += 1;
   }
 
   addProfit(wei: bigint): void {
@@ -51,6 +57,7 @@ class BotMetrics {
       txScanned: this.txScanned,
       opportunitiesFound: this.opportunitiesFound,
       bundlesSubmitted: this.bundlesSubmitted,
+      rateLimitErrors: this.rateLimitErrors,
       totalProfitWei: this.totalProfitWei,
       totalProfitEth,
       successRate,
@@ -66,6 +73,7 @@ class BotMetrics {
           txScanned: summary.txScanned,
           opportunitiesFound: summary.opportunitiesFound,
           bundlesSubmitted: summary.bundlesSubmitted,
+          rateLimitErrors: summary.rateLimitErrors,
           totalProfitEth: summary.totalProfitEth,
           successRate: summary.successRate,
         },

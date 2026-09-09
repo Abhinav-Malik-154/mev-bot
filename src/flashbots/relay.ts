@@ -252,6 +252,29 @@ export async function submitBundle(
   wallet: Wallet,
   provider: JsonRpcProvider,
 ): Promise<BundleResult> {
+  /**
+   * @notice HARD SAFETY GATE — this check cannot be bypassed
+   * When READ_ONLY_MODE is true, this function immediately returns
+   * a synthetic "observed only" result without ever constructing,
+   * signing, or transmitting any transaction. This is intentional
+   * defense-in-depth: even if every other safety check somehow
+   * failed, this line alone prevents real execution.
+   */
+  if (config.readOnlyMode) {
+    logger.info(
+      { targetBlock: bundle.targetBlockNumber, expectedProfitWei: bundle.expectedProfitWei.toString() },
+      '🔍 READ-ONLY MODE — opportunity observed, submission skipped',
+    );
+    return {
+      success: false,
+      bundleHash: null,
+      blockNumber: bundle.targetBlockNumber,
+      profitWei: bundle.expectedProfitWei,
+      gasUsed: bundle.estimatedGasUsed,
+      error: 'READ_ONLY_MODE active — no real submission attempted',
+    };
+  }
+
   let signedTxs: string[];
   let txHashes: string[];
 

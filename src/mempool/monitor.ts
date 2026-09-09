@@ -15,8 +15,10 @@
  */
 
 import { WebSocketProvider, JsonRpcProvider } from 'ethers';
+import type { TransactionResponse } from 'ethers';
 import { createModuleLogger } from '../utils/logger.js';
 import { metrics } from '../utils/metrics.js';
+import { rateLimitBackoff } from '../utils/rateLimiter.js';
 import { config } from '../config.js';
 import type { PendingTransaction } from '../types/index.js';
 
@@ -78,7 +80,23 @@ export class MempoolMonitor {
     // and use void to explicitly fire-and-forget the async inner work.
     await provider.on('pending', (txHash: string): void => {
       void (async (): Promise<void> => {
-        const tx = await provider.getTransaction(txHash);
+        // Individual RPC call is wrapped so a rate-limit (HTTP 429) or any other
+        // transient RPC failure only skips this one transaction — it must never
+        // reject the fire-and-forget task and crash the process.
+        let tx: TransactionResponse | null;
+        try {
+          await rateLimitBackoff.waitIfNeeded();
+          tx = await provider.getTransaction(txHash);
+        } catch (error: unknown) {
+          if (rateLimitBackoff.isRateLimitError(error)) {
+            rateLimitBackoff.recordRateLimit();
+            metrics.incrementRateLimitError();
+            logger.warn({ method: 'eth_getTransactionByHash', txHash }, 'RPC rate limited (429) — skipping transaction');
+          } else {
+            logger.warn({ err: error, method: 'eth_getTransactionByHash', txHash }, 'RPC call failed — skipping transaction');
+          }
+          return;
+        }
 
         if (tx === null || tx.to === null) return;
 
