@@ -16,6 +16,9 @@ export function calculate_arbitrage_profit(amount_in: bigint, reserve_in_a: bigi
  * Price impact of a swap, expressed in basis points (1 bp = 0.01%).
  *
  * `(amount_in * 10_000) / reserve_in`. Returns 0 when `reserve_in` is 0.
+ *
+ * No `mul_div` needed here: `amount_in * 10_000` is at most ~2^78, well
+ * inside `u128`.
  */
 export function calculate_price_impact_bps(amount_in: bigint, reserve_in: bigint): bigint;
 

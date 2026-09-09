@@ -18,3 +18,9 @@ wasm-bindgen = "0.2"
 [profile.release]
 opt-level = 3
 lto = true
+# Money math: trap loudly on any arithmetic overflow rather than wrapping
+# silently. `mul_div` is proven to stay in range over the whole u64 input
+# domain, so this should never fire — it exists to make a future regression
+# fail fast (as a WASM trap the TS binding catches) instead of returning a
+# plausible-looking wrong number.
+overflow-checks = true
