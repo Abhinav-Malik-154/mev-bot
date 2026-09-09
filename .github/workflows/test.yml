@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: TypeScript + Forge
+    name: TypeScript + Rust + Forge
     runs-on: ubuntu-latest
 
     steps:
@@ -33,6 +33,42 @@ jobs:
       - name: TypeScript strict type check
         run: npx tsc --noEmit
 
+      - name: ESLint
+        run: pnpm lint
+
+      # ── Rust / WASM ────────────────────────────────────────────────────────
+      # The AMM hot path is Rust compiled to WASM. Its unit tests run on the
+      # host target; the artifact the bot actually loads is then rebuilt here
+      # so the differential tests below exercise a *freshly compiled* module
+      # rather than whatever happens to be committed under pkg/.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/amm-math/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/amm-math/Cargo.lock') }}
+
+      - name: Rust unit tests
+        run: pnpm test:rust
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM module
+        run: pnpm build:wasm
+
+      # Runs the AMM math tests and, critically, the WASM/TS differential
+      # tests — the ones that catch the Rust and TypeScript implementations
+      # drifting apart on the money path.
+      - name: TypeScript unit tests
+        run: pnpm test
+
+      # ── Solidity ───────────────────────────────────────────────────────────
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
         with:

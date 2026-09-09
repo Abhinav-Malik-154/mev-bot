@@ -4,8 +4,11 @@ node_modules/
 # Build output
 dist/
 
-# Environment — NEVER commit this
+# Environment — NEVER commit these (they hold secrets)
 .env
+.env.*
+# ...but keep the committed template
+!.env.example
 
 # Database files
 *.db
@@ -24,8 +27,7 @@ broadcast/
 .DS_Store
 Thumbs.db
 
-# IDE
+# IDE / local scratch
 branch_structure.json
 temp_auto_push.bat
 temp_interactive_push.bat
-.gitignore

@@ -1,0 +1,16 @@
+# ─── Linguist: report *our* code, not our dependencies ──────────────────────
+#
+# forge-std is committed as plain files rather than a git submodule, so
+# GitHub counted its ~1.05 MB of Solidity (and its vendored vm.py) as part of
+# this project. That put the language bar at ~82% Solidity / 1.5% Python and
+# pushed the Rust hot path — the whole point of rust/amm-math — below the
+# display threshold into "Other".
+contracts/lib/** linguist-vendored
+
+# wasm-pack output. Committed so a clone can load the module without a Rust
+# toolchain, but it is generated from rust/amm-math/src/lib.rs, not authored.
+rust/amm-math/pkg/** linguist-generated
+
+# Font Awesome webfonts shipped for the dashboard — third-party assets.
+# The .svg faces alone are ~1.7 MB and are not hand-written source.
+public/fonts/** linguist-vendored

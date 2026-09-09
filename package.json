@@ -8,8 +8,12 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:mainnet-readonly": "ENV_FILE_PATH=.env.mainnet-readonly tsx watch src/index.ts",
     "start": "node dist/index.js",
     "build": "tsc",
+    "test": "for f in $(find src -name \"*.test.ts\" | sort); do echo \"-> $f\"; npx tsx \"$f\" || exit 1; done",
+    "test:rust": "cd rust/amm-math && cargo test",
+    "build:wasm": "cd rust/amm-math && wasm-pack build --target nodejs --release",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src",
     "test:contracts": "cd contracts && forge test -vvv",
