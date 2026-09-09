@@ -16,6 +16,7 @@ import type { ArbitrageOpportunity, ArbitrageStrategy, BundleResult } from '../t
 interface OpportunityRow {
   id: string;
   strategy_type: string;
+  synthetic: number;
   timestamp: number;
   swap_tx: string;
   token_a: string;
@@ -61,6 +62,7 @@ export function initDatabase(dbPath: string): Database.Database {
     CREATE TABLE IF NOT EXISTS opportunities (
       id                    TEXT    PRIMARY KEY,
       strategy_type         TEXT    NOT NULL DEFAULT 'v2-v2',
+      synthetic             INTEGER NOT NULL DEFAULT 0,
       timestamp             INTEGER NOT NULL,
       swap_tx               TEXT    NOT NULL,
       token_a               TEXT    NOT NULL,
@@ -104,6 +106,14 @@ export function initDatabase(dbPath: string): Database.Database {
     // Column already exists — nothing to do.
   }
 
+  // Same pattern for the synthetic flag: rows written before the test harness
+  // existed were all real detections, so 0 is the correct back-fill.
+  try {
+    db.exec(`ALTER TABLE opportunities ADD COLUMN synthetic INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already exists — nothing to do.
+  }
+
   return db;
 }
 
@@ -122,15 +132,16 @@ export function saveOpportunity(db: Database.Database, opp: ArbitrageOpportunity
 
   const stmt = db.prepare(`
     INSERT OR REPLACE INTO opportunities
-      (id, strategy_type, timestamp, swap_tx, token_a, token_b, pool_a, pool_b,
+      (id, strategy_type, synthetic, timestamp, swap_tx, token_a, token_b, pool_a, pool_b,
        estimated_profit_wei, estimated_gas_cost_wei, net_profit_wei,
        is_profitable, confidence)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
     opp.id,
     opp.strategyType,
+    opp.synthetic ? 1 : 0,
     opp.timestamp,
     JSON.stringify(swapTxForStorage),
     opp.tokenA,
@@ -204,6 +215,7 @@ export function getRecentOpportunities(
     return {
       id: row.id,
       strategyType: (row.strategy_type as ArbitrageStrategy | undefined) ?? 'v2-v2',
+      synthetic: row.synthetic === 1,
       timestamp: row.timestamp,
       swapTx: {
         txHash: rawSwapTx.txHash,
