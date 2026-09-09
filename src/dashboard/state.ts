@@ -27,6 +27,8 @@ export interface RecentOpportunity {
   readonly timestamp: number;
   /** Which detector produced this: 'v2-v2', 'v2-v3' or 'triangular' */
   readonly strategyType: ArbitrageStrategy;
+  /** True when fabricated by the test harness rather than detected on-chain. */
+  readonly synthetic: boolean;
   readonly tokenA: string;
   readonly tokenB: string;
   /** Net profit formatted to 6 decimal places in ETH (may be negative) */
@@ -49,11 +51,15 @@ export interface RecentBundle {
 export interface DashboardState {
   readonly botStatus: 'starting' | 'running' | 'error' | 'stopped';
   readonly chainId: number;
+  /** True when the bot is in read-only observation mode (no submissions). */
+  readonly readOnlyMode: boolean;
   readonly walletAddress: string;
   readonly uptimeSeconds: number;
   readonly txScanned: number;
   readonly opportunitiesFound: number;
   readonly bundlesSubmitted: number;
+  /** RPC rate-limit (HTTP 429) errors caught and survived without crashing */
+  readonly rateLimitErrors: number;
   readonly bundlesIncluded: number;
   readonly successRate: string;
   readonly totalProfitEth: string;
@@ -61,8 +67,12 @@ export interface DashboardState {
   readonly recentBundles: RecentBundle[];
   readonly latency: {
     avgTotalMs: number;
-    minTotalMs: number;
-    maxTotalMs: number;
+    /** Median — the typical case. */
+    p50TotalMs: number;
+    /** 95th percentile — one transaction in twenty is slower than this. */
+    p95TotalMs: number;
+    /** 99th percentile — the tail that loses blocks to competitors. */
+    p99TotalMs: number;
     sampleCount: number;
   };
   readonly lastUpdated: number;
@@ -74,11 +84,13 @@ class DashboardStateManager {
   private state: DashboardState = {
     botStatus: 'starting',
     chainId: 0,
+    readOnlyMode: false,
     walletAddress: '',
     uptimeSeconds: 0,
     txScanned: 0,
     opportunitiesFound: 0,
     bundlesSubmitted: 0,
+    rateLimitErrors: 0,
     bundlesIncluded: 0,
     successRate: '0.00%',
     totalProfitEth: '0.000000',
@@ -86,8 +98,9 @@ class DashboardStateManager {
     recentBundles: [],
     latency: {
       avgTotalMs: 0,
-      minTotalMs: 0,
-      maxTotalMs: 0,
+      p50TotalMs: 0,
+      p95TotalMs: 0,
+      p99TotalMs: 0,
       sampleCount: 0,
     },
     lastUpdated: Date.now(),
@@ -110,6 +123,7 @@ class DashboardStateManager {
       ...this.state,
       txScanned: summary.txScanned,
       opportunitiesFound: summary.opportunitiesFound,
+      rateLimitErrors: summary.rateLimitErrors,
       uptimeSeconds: summary.uptimeSeconds,
       totalProfitEth: summary.totalProfitEth,
       lastUpdated: Date.now(),
@@ -125,6 +139,7 @@ class DashboardStateManager {
       id: opp.id,
       timestamp: opp.timestamp,
       strategyType: opp.strategyType,
+      synthetic: opp.synthetic,
       tokenA: opp.tokenA,
       tokenB: opp.tokenB,
       netProfitEth: parseFloat(formatEther(opp.netProfitWei)).toFixed(6),
@@ -176,14 +191,20 @@ class DashboardStateManager {
    * Updates the live latency panel from the tracker's rolling summary.
    * Only carries the fields the dashboard renders; parse/calculation
    * averages stay internal to the tracker.
+   *
+   * Surfaces percentiles rather than min/max. `min` is the best case and
+   * tells us nothing useful, and `max` is a single outlier one GC pause can
+   * dominate — whereas p95/p99 show how often we are too slow, which is
+   * what decides whether a competitor beats us to the block.
    */
   updateLatency(summary: LatencySummary): void {
     this.state = {
       ...this.state,
       latency: {
         avgTotalMs: summary.avgTotalMs,
-        minTotalMs: summary.minTotalMs,
-        maxTotalMs: summary.maxTotalMs,
+        p50TotalMs: summary.p50TotalMs,
+        p95TotalMs: summary.p95TotalMs,
+        p99TotalMs: summary.p99TotalMs,
         sampleCount: summary.sampleCount,
       },
       lastUpdated: Date.now(),
@@ -198,6 +219,14 @@ class DashboardStateManager {
   /** Stores the executor wallet address and chain ID for the header bar */
   setWalletInfo(address: string, chainId: number): void {
     this.state = { ...this.state, walletAddress: address, chainId, lastUpdated: Date.now() };
+  }
+
+  /**
+   * Records whether the bot is running in read-only observation mode, so the
+   * dashboard can surface an unmistakable badge instead of implying live trading.
+   */
+  setReadOnlyMode(readOnlyMode: boolean): void {
+    this.state = { ...this.state, readOnlyMode, lastUpdated: Date.now() };
   }
 }
 

@@ -111,6 +111,39 @@
     #conn-label { color: var(--text-muted); transition: color 0.3s ease; }
     #conn-label.live { color: var(--accent-green); }
 
+    /* Read-only observation badge — deliberately as prominent as the LIVE
+       indicator so this can never be mistaken for live trading. */
+    .readonly-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 6px;
+      padding: 4px 11px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      color: #0a0a0a;
+      background: var(--accent-yellow);
+      border: 1px solid var(--accent-yellow);
+      box-shadow: 0 0 18px rgba(255, 170, 0, 0.4);
+      text-transform: uppercase;
+      white-space: nowrap;
+      animation: readonly-pulse 2.2s ease-in-out infinite;
+    }
+
+    .readonly-badge[hidden] { display: none; }
+
+    .readonly-badge::before {
+      content: '⚠';
+      font-size: 12px;
+    }
+
+    @keyframes readonly-pulse {
+      0%, 100% { box-shadow: 0 0 14px rgba(255, 170, 0, 0.35); }
+      50%      { box-shadow: 0 0 22px rgba(255, 170, 0, 0.6);  }
+    }
+
     .header-right {
       display: flex;
       align-items: center;
@@ -218,6 +251,12 @@
       color: var(--text-muted);
       margin-top: 8px;
       letter-spacing: 0.02em;
+    }
+
+    /* Amber subtitle — signals the bot caught & survived RPC throttling. */
+    .card-sub.sub-warn {
+      color: var(--accent-yellow);
+      font-weight: 700;
     }
 
     /* ── Table sections ────────────────────────────────────────────── */
@@ -347,6 +386,9 @@
     .badge-v2v2  { background: rgba(0,180,255,0.09);  color: #3ec8ff;            border: 1px solid rgba(0,180,255,0.18); }
     .badge-v2v3  { background: rgba(190,120,255,0.09);color: #c08cff;            border: 1px solid rgba(190,120,255,0.18);}
     .badge-tri   { background: rgba(255,180,0,0.09);  color: var(--accent-yellow);border: 1px solid rgba(255,180,0,0.18); }
+    /* Synthetic rows must be unmistakable — a test run should never be
+       readable as a real detection, even at a glance. */
+    .badge-synth { background: rgba(255,68,68,0.14); color: var(--accent-red); border: 1px dashed rgba(255,68,68,0.5); }
 
     /* ── Cell helpers ──────────────────────────────────────────────── */
     .tc-muted  { color: var(--text-muted);     font-size: 12px; }
@@ -427,6 +469,7 @@
   <div class="header-status">
     <div class="status-dot" id="status-dot"></div>
     <span id="conn-label">CONNECTING</span>
+    <span class="readonly-badge" id="readonly-badge" hidden>READ-ONLY OBSERVATION</span>
   </div>
 
   <div class="header-right">
@@ -443,7 +486,7 @@
     <div class="card">
       <div class="card-label">TXs Scanned</div>
       <div class="card-value cv-blue" id="m-txs">0</div>
-      <div class="card-sub">Mempool transactions</div>
+      <div class="card-sub" id="m-txs-sub">Mempool transactions</div>
     </div>
     <div class="card">
       <div class="card-label">Opportunities</div>
@@ -484,19 +527,24 @@
   <!-- Detection speed cards -->
   <div class="secondary-row">
     <div class="card">
+      <div class="card-label">p50 Latency</div>
+      <div class="card-value cv-green" id="m-lat-p50">—</div>
+      <div class="card-sub">Median — typical case</div>
+    </div>
+    <div class="card">
+      <div class="card-label">p95 Latency</div>
+      <div class="card-value cv-blue" id="m-lat-p95">—</div>
+      <div class="card-sub">1 in 20 is slower</div>
+    </div>
+    <div class="card">
+      <div class="card-label">p99 Latency</div>
+      <div class="card-value cv-yellow" id="m-lat-p99">—</div>
+      <div class="card-sub">Tail — loses blocks</div>
+    </div>
+    <div class="card">
       <div class="card-label">Avg Latency</div>
       <div class="card-value cv-blue" id="m-lat-avg">—</div>
       <div class="card-sub">Detection to decision</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Fastest</div>
-      <div class="card-value cv-green" id="m-lat-min">—</div>
-      <div class="card-sub">Best case</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Slowest</div>
-      <div class="card-value cv-yellow" id="m-lat-max">—</div>
-      <div class="card-sub">Worst case</div>
     </div>
   </div>
 
@@ -647,6 +695,20 @@
     // Primary metrics
     anim('m-txs',     fmtNum(s.txScanned))
     anim('m-opps',    fmtNum(s.opportunitiesFound))
+
+    // Rate-limit survival indicator — only surfaces once the bot has actually
+    // caught and survived a 429, so a healthy run stays clean.
+    var rlErrors = s.rateLimitErrors || 0
+    var txsSub = document.getElementById('m-txs-sub')
+    if (txsSub) {
+      if (rlErrors > 0) {
+        txsSub.textContent = 'Rate limit errors: ' + fmtNum(rlErrors) + ' (survived)'
+        txsSub.classList.add('sub-warn')
+      } else {
+        txsSub.textContent = 'Mempool transactions'
+        txsSub.classList.remove('sub-warn')
+      }
+    }
     anim('m-bundles', fmtNum(s.bundlesSubmitted))
     anim('m-profit',  (s.totalProfitEth || '0.000000') + ' Ξ')
 
@@ -658,16 +720,20 @@
     // rather than a misleading 0ms.
     var lat = s.latency || { sampleCount: 0 }
     if (lat.sampleCount > 0) {
+      anim('m-lat-p50', fmtMs(lat.p50TotalMs))
+      anim('m-lat-p95', fmtMs(lat.p95TotalMs))
+      anim('m-lat-p99', fmtMs(lat.p99TotalMs))
       anim('m-lat-avg', fmtMs(lat.avgTotalMs))
-      anim('m-lat-min', fmtMs(lat.minTotalMs))
-      anim('m-lat-max', fmtMs(lat.maxTotalMs))
     } else {
+      anim('m-lat-p50', '—')
+      anim('m-lat-p95', '—')
+      anim('m-lat-p99', '—')
       anim('m-lat-avg', '—')
-      anim('m-lat-min', '—')
-      anim('m-lat-max', '—')
     }
 
     // Header
+    var readonlyEl = document.getElementById('readonly-badge')
+    if (readonlyEl) readonlyEl.hidden = !s.readOnlyMode
     var chainEl  = document.getElementById('chain-badge')
     var walletEl = document.getElementById('wallet-display')
     if (s.chainId) chainEl.textContent = 'CHAIN ' + s.chainId
@@ -731,10 +797,11 @@
         ? '<span class="badge badge-ok">PROFITABLE</span>'
         : '<span class="badge badge-skip">SKIPPED</span>'
       var strat     = STRATEGY_BADGES[o.strategyType] || STRATEGY_BADGES['v2-v2']
+      var synthTag  = o.synthetic ? '<span class="badge badge-synth">SYNTHETIC</span> ' : ''
 
       return '<tr class="' + rowClass + '">' +
         '<td class="tc-muted">'  + fmtTime(o.timestamp) + '</td>' +
-        '<td><span class="badge ' + strat.cls + '">' + strat.label + '</span></td>' +
+        '<td>' + synthTag + '<span class="badge ' + strat.cls + '">' + strat.label + '</span></td>' +
         '<td class="tc-pair">'   + fmtAddr(o.tokenA) + '<span class="tc-sep">→</span>' + fmtAddr(o.tokenB) + '</td>' +
         '<td class="' + profClass + '">' + profSign + (o.netProfitEth || '0.000000') + ' Ξ</td>' +
         '<td><div class="conf-wrap">' +
