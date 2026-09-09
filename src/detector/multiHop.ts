@@ -20,6 +20,7 @@
  */
 
 import type { JsonRpcProvider } from 'ethers';
+import type { PoolReserves } from '../types/index.js';
 import { createModuleLogger } from '../utils/logger.js';
 import { getAmountOut } from './math.js';
 import {
@@ -106,19 +107,71 @@ export function generateTriangularPaths(
   return paths;
 }
 
+
+/** A pool's reserves keyed by lower-cased pool address. */
+type ReserveSnapshot = ReadonlyMap<string, PoolReserves>;
+
 /**
- * Orients a pool's reserves for a swap from `tokenIn` to `tokenOut`.
- * Fetches reserves once, then maps reserve0/reserve1 to in/out using the
- * pool's sorted token order. Returns null if the pool is missing/empty.
+ * The three legs of a triangular loop: t0->t1, t1->t2, t2->t0.
  */
-async function reservesForHop(
+function legsOf(
+  path: TriangularPath,
+): ReadonlyArray<{ pool: string; tokenIn: string; tokenOut: string }> {
+  const [t0, t1, t2] = path.tokens;
+  const [p0, p1, p2] = path.pools;
+  return [
+    { pool: p0, tokenIn: t0, tokenOut: t1 },
+    { pool: p1, tokenIn: t1, tokenOut: t2 },
+    { pool: p2, tokenIn: t2, tokenOut: t0 },
+  ];
+}
+
+/**
+ * Fetches every distinct pool named by `paths` in one parallel batch.
+ *
+ * Distinct matters: `computePairAddress` sorts its token pair, so the two
+ * directions of a hub loop (WETH->USDC->DAI->WETH and WETH->DAI->USDC->WETH)
+ * name the *same* three pools. Fetching per path would request each pool
+ * once per path that mentions it.
+ *
+ * Pricing every path from a single batch also means they share one
+ * consistent view of the chain rather than a view that drifts between legs.
+ */
+async function fetchReserveSnapshot(
+  paths: ReadonlyArray<TriangularPath>,
+  provider: JsonRpcProvider,
+): Promise<ReserveSnapshot> {
+  const uniquePools = new Map<string, string>();
+  for (const path of paths) {
+    for (const pool of path.pools) uniquePools.set(pool.toLowerCase(), pool);
+  }
+
+  const entries = await Promise.all(
+    [...uniquePools].map(async ([key, address]): Promise<[string, PoolReserves] | null> => {
+      const reserves = await getPoolReserves(address, provider);
+      return reserves === null ? null : [key, reserves];
+    }),
+  );
+
+  const snapshot = new Map<string, PoolReserves>();
+  for (const entry of entries) {
+    if (entry !== null) snapshot.set(entry[0], entry[1]);
+  }
+  return snapshot;
+}
+
+/**
+ * Orients a snapshot entry for a swap from `tokenIn` to `tokenOut`.
+ * Returns null when the pool is absent from the snapshot.
+ */
+function orientFromSnapshot(
+  snapshot: ReserveSnapshot,
   poolAddress: string,
   tokenIn: string,
   tokenOut: string,
-  provider: JsonRpcProvider,
-): Promise<{ reserveIn: bigint; reserveOut: bigint } | null> {
-  const reserves = await getPoolReserves(poolAddress, provider);
-  if (reserves === null) return null;
+): { reserveIn: bigint; reserveOut: bigint } | null {
+  const reserves = snapshot.get(poolAddress.toLowerCase());
+  if (reserves === undefined) return null;
 
   const [token0] = sortTokens(tokenIn, tokenOut);
   const inIsToken0 = tokenIn.toLowerCase() === token0.toLowerCase();
@@ -129,31 +182,21 @@ async function reservesForHop(
 }
 
 /**
- * Calculates the final output of executing a full triangular path.
- * Chains getAmountOut through all three pools sequentially, returning the
- * amount of the start token recovered. Returns 0n if any leg's pool is
- * missing/empty or any intermediate amount collapses to zero.
+ * Pure evaluation of a triangular loop against an already-fetched snapshot.
+ * Chains getAmountOut through the three pools, returning the amount of the
+ * start token recovered. Returns 0n if any leg's pool is missing/empty or
+ * any intermediate amount collapses to zero. No network access.
  */
-export async function simulateTriangularPath(
+export function simulateTriangularPathFromReserves(
   path: TriangularPath,
   amountIn: bigint,
-  provider: JsonRpcProvider,
-): Promise<bigint> {
+  snapshot: ReserveSnapshot,
+): bigint {
   if (amountIn <= 0n) return 0n;
 
-  const [t0, t1, t2] = path.tokens;
-  const [p0, p1, p2] = path.pools;
-
-  // The loop's hops: t0->t1, t1->t2, t2->t0.
-  const legs: ReadonlyArray<{ pool: string; tokenIn: string; tokenOut: string }> = [
-    { pool: p0, tokenIn: t0, tokenOut: t1 },
-    { pool: p1, tokenIn: t1, tokenOut: t2 },
-    { pool: p2, tokenIn: t2, tokenOut: t0 },
-  ];
-
   let amount = amountIn;
-  for (const leg of legs) {
-    const oriented = await reservesForHop(leg.pool, leg.tokenIn, leg.tokenOut, provider);
+  for (const leg of legsOf(path)) {
+    const oriented = orientFromSnapshot(snapshot, leg.pool, leg.tokenIn, leg.tokenOut);
     if (oriented === null) return 0n;
     amount = getAmountOut(amount, oriented.reserveIn, oriented.reserveOut);
     if (amount === 0n) return 0n;
@@ -162,11 +205,30 @@ export async function simulateTriangularPath(
 }
 
 /**
+ * Calculates the final output of executing a full triangular path.
+ *
+ * The three legs must be *evaluated* in order — each hop's input is the
+ * previous hop's output — but the reserve *fetches* depend only on the pool
+ * addresses, which are known up front. They are therefore issued as one
+ * parallel batch instead of three sequential round-trips.
+ */
+export async function simulateTriangularPath(
+  path: TriangularPath,
+  amountIn: bigint,
+  provider: JsonRpcProvider,
+): Promise<bigint> {
+  if (amountIn <= 0n) return 0n;
+  const snapshot = await fetchReserveSnapshot([path], provider);
+  return simulateTriangularPathFromReserves(path, amountIn, snapshot);
+}
+
+/**
  * Searches all triangular paths from a starting token and amount, returning
  * the most profitable opportunity found (or null if none is profitable).
  *
- * Paths are simulated in parallel — each is independent and the per-path cost
- * is three read-only reserve fetches.
+ * Every distinct pool across every path is fetched in a single parallel
+ * batch, then each path is scored purely against that snapshot. Starting
+ * from WETH over the hub set this is 3 pool reads total, not 3 per path.
  */
 export async function findBestTriangularArbitrage(
   startToken: string,
@@ -176,26 +238,21 @@ export async function findBestTriangularArbitrage(
   if (testAmountIn <= 0n) return null;
 
   const paths = generateTriangularPaths(startToken, HUB_TOKENS);
+  const snapshot = await fetchReserveSnapshot(paths, provider);
 
-  const results = await Promise.all(
-    paths.map(async (path): Promise<TriangularOpportunity | null> => {
-      const finalAmountOut = await simulateTriangularPath(path, testAmountIn, provider);
-      if (finalAmountOut <= testAmountIn) return null;
-      return {
+  let best: TriangularOpportunity | null = null;
+  for (const path of paths) {
+    const finalAmountOut = simulateTriangularPathFromReserves(path, testAmountIn, snapshot);
+    if (finalAmountOut <= testAmountIn) continue;
+    const profitWei = finalAmountOut - testAmountIn;
+    if (best === null || profitWei > best.profitWei) {
+      best = {
         path,
         startAmountIn: testAmountIn,
         finalAmountOut,
-        profitWei: finalAmountOut - testAmountIn,
+        profitWei,
         isProfitable: true,
       };
-    }),
-  );
-
-  let best: TriangularOpportunity | null = null;
-  for (const result of results) {
-    if (result === null) continue;
-    if (best === null || result.profitWei > best.profitWei) {
-      best = result;
     }
   }
 

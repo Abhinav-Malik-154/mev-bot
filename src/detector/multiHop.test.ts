@@ -10,9 +10,16 @@
 
 import assert from 'node:assert';
 import { getAddress } from 'ethers';
-import { generateTriangularPaths, HUB_TOKENS } from './multiHop.js';
+import {
+  generateTriangularPaths,
+  simulateTriangularPathFromReserves,
+  HUB_TOKENS,
+} from './multiHop.js';
+import { getAmountOut } from './math.js';
+import type { PoolReserves } from '../types/index.js';
 import {
   computePairAddress,
+  sortTokens,
   UNISWAP_V2_FACTORY,
   UNISWAP_V2_INIT_CODE_HASH,
 } from './pools.js';
@@ -62,6 +69,64 @@ const WETH = '0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9';
     assert.strictEqual(getAddress(p1), expected1, 'Test 3 failed: leg 1 pool mismatch');
     assert.strictEqual(getAddress(p2), expected2, 'Test 3 failed: leg 2 pool mismatch (loop not closed)');
   }
+}
+
+// Test 4: the two WETH loops name the same three pools, because
+// computePairAddress sorts its pair — so a batched, de-duplicated fetch costs
+// 3 pool reads rather than the 6 that per-path fetching would issue.
+{
+  const paths = generateTriangularPaths(WETH, HUB_TOKENS);
+  const allPools = paths.flatMap((path) => path.pools);
+  const unique = new Set(allPools.map((pool) => pool.toLowerCase()));
+  assert.strictEqual(allPools.length, 6, 'Test 4 failed: expected 6 pool slots across 2 paths');
+  assert.strictEqual(unique.size, 3, `Test 4 failed: expected 3 unique pools, got ${unique.size}`);
+}
+
+// Test 5: pure evaluation against a snapshot — no network. A loop through
+// three balanced pools must lose exactly the compounded 0.3% fee, and a
+// snapshot missing any leg must collapse to 0n rather than guess.
+{
+  const paths = generateTriangularPaths(WETH, HUB_TOKENS);
+  const path = paths[0];
+  assert.ok(path !== undefined, 'Test 5 setup: expected at least one path');
+
+  const reserve = 1000n * 10n ** 18n;
+  const snapshot = new Map<string, PoolReserves>();
+  for (const [index, pool] of path.pools.entries()) {
+    const [token0, token1] = sortTokens(
+      path.tokens[index] as string,
+      path.tokens[(index + 1) % 3] as string,
+    );
+    snapshot.set(pool.toLowerCase(), {
+      reserve0: reserve,
+      reserve1: reserve,
+      token0,
+      token1,
+      fee: 30,
+    });
+  }
+
+  const amountIn = 10n ** 18n;
+  const out = simulateTriangularPathFromReserves(path, amountIn, snapshot);
+
+  // Three balanced hops, each charging 0.3%: strictly lossy, but close to 1.
+  assert.ok(out > 0n, 'Test 5 failed: expected a non-zero result');
+  assert.ok(out < amountIn, `Test 5 failed: balanced loop must lose to fees, got ${out}`);
+  assert.ok(out > (amountIn * 98n) / 100n, `Test 5 failed: loss too large, got ${out}`);
+
+  // Chained by hand: three getAmountOut hops through identical reserves.
+  let expected = amountIn;
+  for (let i = 0; i < 3; i++) expected = getAmountOut(expected, reserve, reserve);
+  assert.strictEqual(out, expected, 'Test 5 failed: does not match hand-chained getAmountOut');
+
+  // Drop one leg -> the loop cannot be priced.
+  const incomplete = new Map(snapshot);
+  incomplete.delete(path.pools[1].toLowerCase());
+  assert.strictEqual(
+    simulateTriangularPathFromReserves(path, amountIn, incomplete),
+    0n,
+    'Test 5 failed: missing pool must yield 0n',
+  );
 }
 
 console.log('✓ All multi-hop tests passed');
