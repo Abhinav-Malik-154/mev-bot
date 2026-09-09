@@ -115,6 +115,9 @@ mev-searcher-bot/
 │   ├── detector/
 │   │   ├── math.ts           # AMM constant product formula — pure bigint, no floats
 │   │   ├── pools.ts          # On-chain reserve fetching + CREATE2 pair address
+│   │   ├── uniswapV3.ts      # Concentrated liquidity: sqrtPriceX96, tick math
+│   │   ├── multiHop.ts       # Triangular path finding + batched reserve snapshot
+│   │   ├── wasmMath.ts       # Typed bindings for the Rust/WASM hot path
 │   │   └── arbitrage.ts      # Opportunity detection + confidence scoring
 │   ├── executor/
 │   │   ├── bundleBuilder.ts  # Constructs EIP-1559 transaction bundles
@@ -136,6 +139,10 @@ mev-searcher-bot/
 │   │   └── FlashExecutor.sol # Atomic arbitrage executor — onlyOwner + nonReentrant
 │   └── test/
 │       └── FlashExecutor.t.sol # 11 tests: 8 unit + 3 fuzz (1000 runs each)
+├── rust/
+│   └── amm-math/
+│       ├── src/lib.rs        # Constant-product math in Rust — exact 256-bit mul-div
+│       └── pkg/              # wasm-pack output (generated, committed for clones)
 ├── scripts/
 │   └── deploy.ts             # Deploys FlashExecutor to Sepolia via ethers v6
 ├── .env.example              # All required env vars documented
@@ -162,14 +169,46 @@ mev-searcher-bot/
 - **100%** function coverage on `FlashExecutor.sol`
 - **93%** line coverage on `FlashExecutor.sol`
 - **3,000+** fuzz test executions (3 fuzz tests × 1000 runs each)
-- **6 / 6** AMM math unit tests passing
+- **8 / 8** Rust unit tests passing (`pnpm test:rust`)
+- **7 / 7** TypeScript test suites passing (`pnpm test`) — AMM math, Uniswap V3,
+  multi-hop, a WASM↔TypeScript differential suite that asserts the Rust and
+  TypeScript implementations agree bit-for-bit at wei scale, latency percentile
+  maths, rate-limit recovery under injected faults, and synthetic-harness
+  labelling through a real SQLite round trip
 
 ### Bot Performance
 
-- Detection latency: sub-200ms from pending tx to opportunity scored
+Detection latency is **measured, not asserted**. `process.hrtime.bigint()` times
+each pending transaction through parse and calculation stages, and the dashboard
+reports **p50 / p95 / p99** over a rolling 1000-sample window.
+
+Percentiles rather than an average because MEV is a tail-latency game: a
+competitor takes the opportunity when we are slow on *that* transaction, not
+when our mean looks healthy. `max` is no substitute either — it is one outlier a
+single GC pause can dominate.
+
+- Detection latency: reported live at p50/p95/p99 on the dashboard
 - Simulation: Anvil fork completes in ~2–3 seconds
 - Retry strategy: up to 3 blocks with exponential backoff on reconnect
 - Minimum profit threshold: configurable (default 0.001 ETH after gas)
+
+### Resilience
+
+- **Read-only mode** (`READ_ONLY_MODE=true`) — observes real mainnet mempool
+  traffic while being physically incapable of submitting a bundle
+- **Rate-limit backoff** — a shared pause deadline with per-caller jitter, so
+  the hundreds of concurrent mempool tasks do not all resume on the same
+  millisecond and re-trigger the provider's limit. Repeated throttling escalates
+  the pause exponentially, capped, and stands down after a clean window.
+- **Fault injection** (`INJECT_FAULT_RATE=0.25`) — throws synthetic 429s that
+  rotate through all five error shapes ethers can produce, so every recovery
+  branch is exercised on the live path rather than only matched offline
+- **Synthetic pipeline harness** (`INJECT_OPPORTUNITY=true`) — pushes one
+  fabricated opportunity through the identical execution path to prove every
+  stage connects. Stored with `synthetic=1`, badged on the dashboard, and
+  excluded from the opportunities metric, so a test run can never be read as a
+  real detection. It is not a speed benchmark — fabricated data skips the
+  network round-trips that dominate real latency.
 
 ---
 
@@ -281,7 +320,7 @@ The bot runs as a single process on one machine. SQLite with `better-sqlite3` is
 - [x] FlashExecutor.sol with full test suite
 - [x] Live monitoring dashboard
 - [x] Uniswap V3 concentrated liquidity support
-- [x] Multi-hop arbitrage (3+ pools)
+- [x] Multi-hop arbitrage (3+ pools) — *detection only; 3-leg execution not yet wired*
 - [x] Rust WASM module for AMM hot path
 - [ ] Mainnet deployment with real capital
 - [ ] MEV-Share orderflow integration
