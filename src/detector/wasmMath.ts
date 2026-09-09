@@ -133,8 +133,14 @@ export function calculatePriceImpactBpsWasm(amountIn: bigint, reserveIn: bigint)
 }
 
 /**
- * WASM-accelerated two-leg arbitrage profit. Returns signed profit (negative
- * when the round trip loses money). Same u64 ceiling on every input.
+ * WASM-accelerated two-leg arbitrage profit. Same u64 ceiling on every input.
+ *
+ * Returns 0n when the round trip is unprofitable, matching
+ * `calculateArbitrageProfit` in math.ts. The underlying Rust export is
+ * *signed* — it reports how badly a losing loop lost — but this module's
+ * contract is to be behaviourally identical to math.ts, so the negative
+ * range is clamped here. Read the raw signed value from the Rust export
+ * directly if a caller ever needs to rank losing paths.
  */
 export function calculateArbitrageProfitWasm(
   amountIn: bigint,
@@ -145,5 +151,12 @@ export function calculateArbitrageProfitWasm(
 ): bigint {
   const mod = requireModule();
   assertU64(amountIn, reserveInA, reserveOutA, reserveInB, reserveOutB);
-  return mod.calculate_arbitrage_profit(amountIn, reserveInA, reserveOutA, reserveInB, reserveOutB);
+  const signed = mod.calculate_arbitrage_profit(
+    amountIn,
+    reserveInA,
+    reserveOutA,
+    reserveInB,
+    reserveOutB,
+  );
+  return signed > 0n ? signed : 0n;
 }
