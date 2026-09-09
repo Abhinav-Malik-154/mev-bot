@@ -61,6 +61,12 @@ export interface ArbitrageOpportunity {
   id: string;
   /** Detection strategy that found this opportunity */
   strategyType: ArbitrageStrategy;
+  /**
+   * True when this opportunity was fabricated by the test harness rather than
+   * detected on-chain. Carried all the way into SQLite and the dashboard so a
+   * test run can never be mistaken for a real detection.
+   */
+  synthetic: boolean;
   /** Unix timestamp in milliseconds when this opportunity was detected */
   timestamp: number;
   /** The victim swap transaction that creates the price impact we exploit */
@@ -106,6 +112,24 @@ export interface BotConfig {
   minProfitWei: bigint;
   /** Upper gas price ceiling; opportunities above this are skipped, in gwei */
   maxGasPriceGwei: bigint;
+  /**
+   * Hard safety switch. When true, the bot observes mainnet but is physically
+   * incapable of submitting bundles or sending real transactions. Defaults to
+   * false when READ_ONLY_MODE is unset, so existing configs are unaffected.
+   */
+  readOnlyMode: boolean;
+  /**
+   * Test-only fault injection. Probability (0..1) that a guarded RPC call
+   * throws a synthetic HTTP 429, used to prove the rate-limit recovery paths
+   * actually recover instead of crashing. 0 disables it entirely.
+   */
+  injectFaultRate: number;
+  /**
+   * Test-only. When true, one clearly-labelled synthetic opportunity is pushed
+   * through the full pipeline at startup to prove every stage connects.
+   * Never affects real detection.
+   */
+  injectOpportunity: boolean;
 }
 
 export interface BundleResult {
@@ -156,6 +180,8 @@ export interface MetricsSummary {
   opportunitiesFound: number;
   /** Number of Flashbots bundles submitted to the relay */
   bundlesSubmitted: number;
+  /** Count of RPC rate-limit (HTTP 429) errors caught and survived */
+  rateLimitErrors: number;
   /** Cumulative profit captured across all successful bundles, in wei */
   totalProfitWei: bigint;
   /** Human-readable profit formatted to 6 decimal places in ETH */
