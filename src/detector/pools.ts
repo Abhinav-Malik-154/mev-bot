@@ -20,6 +20,8 @@
 
 import { JsonRpcProvider, Contract, getAddress, keccak256, solidityPacked } from 'ethers';
 import { createModuleLogger } from '../utils/logger.js';
+import { metrics } from '../utils/metrics.js';
+import { rateLimitBackoff } from '../utils/rateLimiter.js';
 import type { PoolReserves } from '../types/index.js';
 
 const logger = createModuleLogger('pools');
@@ -86,9 +88,26 @@ export function computePairAddress(
 }
 
 /**
+ * `token0`/`token1` are written once when a Uniswap V2 pair is initialised and
+ * are immutable thereafter, so they are fetched once per address and reused
+ * for the lifetime of the process.
+ *
+ * Reserves are deliberately **never** cached: they change every block, and
+ * pricing a trade against a stale reserve is exactly the kind of error that
+ * loses money. Only the immutable half is memoised.
+ */
+const pairTokenCache = new Map<string, { token0: string; token1: string }>();
+
+/**
  * Fetches current reserves from a Uniswap V2 pool contract.
  * Returns reserves in token0/token1 order (sorted by address).
  * Returns null if pool does not exist or call fails.
+ *
+ * This sits on the detection hot path, so the calls are issued together
+ * rather than awaited one after another: previously `getReserves`, `token0`
+ * and `token1` were three sequential round-trips per pool. Now a warm pair
+ * costs a single `getReserves` round-trip, and a cold one costs a single
+ * batch of three issued in parallel.
  */
 export async function getPoolReserves(
   pairAddress: string,
@@ -96,21 +115,38 @@ export async function getPoolReserves(
 ): Promise<PoolReserves | null> {
   try {
     const pair = new Contract(pairAddress, PAIR_ABI, provider) as unknown as UniswapV2Pair;
-    const [reserve0, reserve1] = await pair.getReserves();
-    const token0 = await pair.token0();
-    const token1 = await pair.token1();
+    const cacheKey = pairAddress.toLowerCase();
+    const cachedTokens = pairTokenCache.get(cacheKey);
 
+    await rateLimitBackoff.waitIfNeeded();
+    const [reserves, tokens] = await Promise.all([
+      pair.getReserves(),
+      cachedTokens ??
+        Promise.all([pair.token0(), pair.token1()]).then(([t0, t1]) => ({
+          token0: getAddress(t0),
+          token1: getAddress(t1),
+        })),
+    ]);
+
+    const [reserve0, reserve1] = reserves;
+    if (cachedTokens === undefined) pairTokenCache.set(cacheKey, tokens);
     if (reserve0 === 0n && reserve1 === 0n) return null;
 
     return {
       reserve0,
       reserve1,
-      token0: getAddress(token0),
-      token1: getAddress(token1),
+      token0: tokens.token0,
+      token1: tokens.token1,
       fee: 30,
     };
   } catch (err: unknown) {
-    logger.debug({ pairAddress, err }, 'getPoolReserves failed');
+    if (rateLimitBackoff.isRateLimitError(err)) {
+      rateLimitBackoff.recordRateLimit();
+      metrics.incrementRateLimitError();
+      logger.warn({ pairAddress, method: 'getReserves' }, 'RPC rate limited (429) — skipping pool');
+    } else {
+      logger.debug({ pairAddress, err }, 'getPoolReserves failed');
+    }
     return null;
   }
 }

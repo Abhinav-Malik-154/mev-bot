@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { createModuleLogger } from '../utils/logger.js';
 import { config } from '../config.js';
 import { metrics } from '../utils/metrics.js';
+import { rateLimitBackoff } from '../utils/rateLimiter.js';
 import {
   calculatePriceImpactBps,
   findOptimalAmountIn,
@@ -323,6 +324,7 @@ export async function detectArbitrageOpportunity(
     const opportunity: ArbitrageOpportunity = {
       id: randomUUID(),
       strategyType: 'v2-v2',
+      synthetic: false,
       timestamp: Date.now(),
       swapTx: swap,
       tokenA,
@@ -520,6 +522,7 @@ export async function detectV2V3CrossArbitrage(
     const opportunity: ArbitrageOpportunity = {
       id: randomUUID(),
       strategyType: 'v2-v3',
+      synthetic: false,
       timestamp: Date.now(),
       swapTx: swap,
       tokenA,
@@ -556,12 +559,19 @@ export async function detectV2V3CrossArbitrage(
  */
 export async function getCurrentGasPrice(provider: JsonRpcProvider): Promise<bigint> {
   try {
+    await rateLimitBackoff.waitIfNeeded();
     const feeData = await provider.getFeeData();
     if (feeData.gasPrice !== null) return feeData.gasPrice;
     if (feeData.maxFeePerGas !== null) return feeData.maxFeePerGas;
     return config.maxGasPriceGwei * 10n ** 9n;
   } catch (err: unknown) {
-    logger.warn({ err }, 'Failed to fetch gas price — using config max');
+    if (rateLimitBackoff.isRateLimitError(err)) {
+      rateLimitBackoff.recordRateLimit();
+      metrics.incrementRateLimitError();
+      logger.warn({ method: 'eth_feeHistory' }, 'RPC rate limited (429) fetching gas price — using config max');
+    } else {
+      logger.warn({ err }, 'Failed to fetch gas price — using config max');
+    }
     return config.maxGasPriceGwei * 10n ** 9n;
   }
 }

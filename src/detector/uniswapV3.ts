@@ -26,6 +26,8 @@ import {
   type JsonRpcProvider,
 } from 'ethers';
 import { createModuleLogger } from '../utils/logger.js';
+import { metrics } from '../utils/metrics.js';
+import { rateLimitBackoff } from '../utils/rateLimiter.js';
 import { sortTokens } from './pools.js';
 
 const logger = createModuleLogger('uniswapV3');
@@ -110,6 +112,7 @@ export async function getV3PoolState(
 ): Promise<V3PoolState | null> {
   try {
     const pool = new Contract(poolAddress, V3_POOL_ABI, provider) as unknown as UniswapV3Pool;
+    await rateLimitBackoff.waitIfNeeded();
     const [slot0, liquidity, token0, token1, fee] = await Promise.all([
       pool.slot0(),
       pool.liquidity(),
@@ -133,7 +136,13 @@ export async function getV3PoolState(
       fee: Number(fee),
     };
   } catch (err: unknown) {
-    logger.debug({ poolAddress, err }, 'getV3PoolState failed');
+    if (rateLimitBackoff.isRateLimitError(err)) {
+      rateLimitBackoff.recordRateLimit();
+      metrics.incrementRateLimitError();
+      logger.warn({ poolAddress, method: 'slot0/liquidity' }, 'RPC rate limited (429) — skipping V3 pool');
+    } else {
+      logger.debug({ poolAddress, err }, 'getV3PoolState failed');
+    }
     return null;
   }
 }

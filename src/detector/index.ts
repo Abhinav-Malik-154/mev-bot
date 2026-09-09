@@ -28,6 +28,7 @@ export {
 export {
   generateTriangularPaths,
   simulateTriangularPath,
+  simulateTriangularPathFromReserves,
   findBestTriangularArbitrage,
   HUB_TOKENS,
   type TriangularPath,
