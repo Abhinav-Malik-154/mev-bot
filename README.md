@@ -47,7 +47,7 @@ graph TD
     D -->|AMM Math Engine| G[Constant Product Formula x·y=k]
     D -->|Opportunity found| H[Bundle Builder]
     H -->|Build tx sequence| I[Anvil Simulator]
-    I -->|Fork Sepolia + replay| J{Profitable?}
+    I -->|Fork current chain + replay| J{Profitable?}
     J -->|Yes| K[Flashbots Relay]
     J -->|No| L[Drop - log reason]
     K -->|eth_sendBundle| M[Flashbots MEV-Share]
@@ -86,7 +86,7 @@ The constant-product math (`getAmountOut`, price impact, optimal-size search) is
 
 ## ⚙️ How It Works
 
-1. **Mempool Monitoring** — A persistent WebSocket connection subscribes to `eth_subscribe("newPendingTransactions")` on Alchemy's Sepolia endpoint. Every pending transaction hash is fetched and decoded in real time. The monitor auto-reconnects with exponential backoff if the connection drops, so no opportunities are missed during network hiccups.
+1. **Mempool Monitoring** — A persistent WebSocket connection subscribes to `eth_subscribe("newPendingTransactions")` on an Alchemy endpoint (currently Ethereum mainnet, in read-only mode). Every pending transaction hash is fetched and decoded in real time. The monitor auto-reconnects with exponential backoff if the connection drops, so no opportunities are missed during network hiccups.
 
 2. **Swap Detection** — Incoming transaction calldata is matched against known Uniswap V2 Router function selectors (`swapExactTokensForTokens`, `swapExactETHForTokens`, etc.) before any expensive ABI decoding is attempted. Only matching transactions go through the full `ethers.Interface.parseTransaction()` decode path, which extracts `tokenIn`, `tokenOut`, `amountIn`, `amountOutMin`, and `deadline`.
 
@@ -251,7 +251,7 @@ Edit `.env` with your values:
 | `FLASHBOTS_RELAY_URL` | Flashbots relay | Use default (Sepolia) |
 | `EXECUTOR_PRIVATE_KEY` | Searcher wallet key | Create dedicated wallet |
 | `EXECUTOR_CONTRACT_ADDRESS` | FlashExecutor address | After deployment |
-| `CHAIN_ID` | Network ID | 11155111 for Sepolia |
+| `CHAIN_ID` | Network ID | `1` for mainnet, `11155111` for Sepolia |
 
 ### Deploy the Contract
 
@@ -311,28 +311,54 @@ The bot runs as a single process on one machine. SQLite with `better-sqlite3` is
 
 ## 🗺️ Roadmap
 
-- [x] Mempool monitoring with WebSocket
-- [x] Uniswap V2 swap detection and decoding
-- [x] AMM constant product math engine
-- [x] Arbitrage opportunity detection
-- [x] Anvil fork simulation
-- [x] Flashbots MEV-Share bundle submission
-- [x] FlashExecutor.sol with full test suite
-- [x] Live monitoring dashboard
-- [x] Uniswap V3 concentrated liquidity support
-- [x] Multi-hop arbitrage (3+ pools) — *detection only; 3-leg execution not yet wired*
-- [x] Rust WASM module for AMM hot path
-- [ ] Mainnet deployment with real capital
-- [ ] MEV-Share orderflow integration
+Split by what has actually been *observed working* versus what is written and
+tested but has not yet run against live data. Everything below is implemented;
+the distinction is about evidence, not effort.
+
+**✅ Verified — observed running against live mainnet**
+
+- Mempool monitoring (WebSocket + auto-reconnect) — 1,168 mainnet transactions scanned
+- Uniswap V2 swap detection and decoding
+- AMM constant-product engine — TypeScript + Rust/WASM, proven bit-for-bit
+  identical by a differential suite at wei scale
+- Rust WASM module for the AMM hot path
+- Uniswap V3 concentrated liquidity support
+- `FlashExecutor.sol` — 11 tests, 3,000 fuzz runs, 100% function coverage
+- Live monitoring dashboard with p50/p95/p99 detection latency
+- Read-only mainnet observation with a hard safety gate
+- RPC rate-limit backoff — shared pause deadline with per-caller jitter
+
+**🟡 Built and unit-tested — not yet exercised on live data**
+
+- Arbitrage opportunity detection — round-trip invariants are now enforced by
+  tests, but no real opportunity has cleared the profit threshold on mainnet yet
+- Anvil fork simulation
+- Flashbots MEV-Share bundle submission — no bundle has been submitted
+- Multi-hop arbitrage (3+ pools) — detection only; 3-leg execution not wired
+
+**⬜ Not started**
+
+- Mainnet deployment with real capital
+- MEV-Share orderflow integration
 
 ---
 
 ## ⚠️ Disclaimer
 
-This project runs on **Sepolia testnet** using test ETH.
-No real funds are at risk. This is a portfolio/educational project
-demonstrating MEV infrastructure concepts.
-Never run MEV bots with real capital without understanding the risks.
+This project observes **Ethereum mainnet in read-only mode**.
+
+`READ_ONLY_MODE=true` is a hard safety gate in
+[`src/flashbots/relay.ts`](src/flashbots/relay.ts): submission returns early
+before any transaction is constructed, signed, or transmitted. **No capital is
+deployed, and no transaction has ever been broadcast from this codebase.**
+
+This is a portfolio/educational project demonstrating MEV infrastructure
+concepts. Never run an MEV bot with real capital without understanding the
+risks — a single error in profit maths can drain a wallet. This codebase has
+already had two such bugs, both caught before any capital was at risk: a `u128`
+overflow in the Rust hot path that silently returned values 30x too low, and a
+reserve-orientation error that fabricated impossible multi-million-ETH profits.
+Both are fixed and now guarded by invariant tests.
 
 ## 📄 License
 
