@@ -116,8 +116,13 @@ function wasmRoundTripHasEdge(
 ): boolean {
   if (!isWasmMathLoaded() || probeIn <= 0n) return true;
   try {
-    const fwd = getAmountOutWasm(getAmountOutWasm(probeIn, rInA, rOutA), rInB, rOutB);
-    const rev = getAmountOutWasm(getAmountOutWasm(probeIn, rInB, rOutB), rInA, rOutA);
+    // Each round trip's second hop sells the intermediate token back, so the
+    // second pool's reserves must be flipped (out-side in, in-side out) — the
+    // same orientation fix applied to the precise findOptimalAmountIn path
+    // below. Without the flip an intermediate-token amount is fed into the
+    // base-token reserve, fabricating an impossible edge.
+    const fwd = getAmountOutWasm(getAmountOutWasm(probeIn, rInA, rOutA), rOutB, rInB);
+    const rev = getAmountOutWasm(getAmountOutWasm(probeIn, rInB, rOutB), rOutA, rInA);
     return fwd > probeIn || rev > probeIn;
   } catch {
     return true; // out of u64 range — defer to the precise pure-TS path
@@ -272,21 +277,28 @@ export async function detectArbitrageOpportunity(
       continue;
     }
 
-    // Try primary→alt direction
+    // Try primary→alt direction: tokenA --poolA--> tokenB --poolB--> tokenA.
+    // The return leg sells tokenB back on pool B, so pool B's reserves must be
+    // oriented tokenB-in / tokenA-out — i.e. FLIPPED from the tokenA/tokenB
+    // sorting computed above (altReserveOut is pool B's tokenB side,
+    // altReserveIn its tokenA side). Passing them unflipped feeds a tokenB
+    // amount into the tokenA reserve and fabricates an impossible profit.
     const { optimalAmountIn: amtA, expectedProfit: profitA } = findOptimalAmountIn(
       primaryReserveIn,
       primaryReserveOut,
-      altReserveIn,
       altReserveOut,
+      altReserveIn,
       maxAmountIn,
     );
 
-    // Try alt→primary direction
+    // Try alt→primary direction: tokenA --poolB--> tokenB --poolA--> tokenA.
+    // Same rule for this direction's return leg — pool A now sells tokenB back,
+    // so pool A's reserves are oriented tokenB-in / tokenA-out (FLIPPED).
     const { optimalAmountIn: amtB, expectedProfit: profitB } = findOptimalAmountIn(
       altReserveIn,
       altReserveOut,
-      primaryReserveIn,
       primaryReserveOut,
+      primaryReserveIn,
       maxAmountIn,
     );
 
@@ -352,10 +364,10 @@ export async function detectArbitrageOpportunity(
     }
   }
 
-  if (bestOpportunity !== null) {
-    metrics.incrementOpportunityFound();
-  }
-
+  // NOTE: opportunitiesFound is incremented only once per genuinely distinct
+  // opportunity, at the single recording site (recordOpportunity in index.ts).
+  // Counting here as well would double-count: this candidate still competes
+  // against the other strategies and is only "found" once it is recorded.
   return bestOpportunity;
 }
 
@@ -546,10 +558,9 @@ export async function detectV2V3CrossArbitrage(
     }
   }
 
-  if (bestOpportunity !== null) {
-    metrics.incrementOpportunityFound();
-  }
-
+  // See note in detectArbitrageOpportunity: opportunitiesFound is incremented
+  // exactly once, at the recording site (recordOpportunity in index.ts), never
+  // per detector code path.
   return bestOpportunity;
 }
 
