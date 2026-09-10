@@ -66,6 +66,23 @@ jobs:
       # tests — the ones that catch the Rust and TypeScript implementations
       # drifting apart on the money path.
       - name: TypeScript unit tests
+        # Dummy values only — they exist solely to satisfy config.ts validation
+        # at import time (reserveFlip.test.ts imports arbitrage.ts -> config.ts,
+        # which requires CHAIN_ID etc.). NOT secrets and NOT used for any real
+        # network call: reserveFlip.test.ts drives a stub provider, so no RPC
+        # connection is ever opened. The private key is Anvil/Hardhat test
+        # account #0 (publicly known, zero funds).
+        env:
+          ALCHEMY_WS_URL: wss://eth-sepolia.g.alchemy.com/v2/dummy_ci_key
+          ALCHEMY_HTTP_URL: https://eth-sepolia.g.alchemy.com/v2/dummy_ci_key
+          FLASHBOTS_RELAY_URL: https://relay-sepolia.flashbots.net
+          EXECUTOR_PRIVATE_KEY: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+          EXECUTOR_CONTRACT_ADDRESS: 0x0000000000000000000000000000000000000000
+          CHAIN_ID: 11155111
+          LOG_LEVEL: error
+          DB_PATH: ./data/ci-test.db
+          MIN_PROFIT_WEI: 1000000000000000
+          MAX_GAS_PRICE_GWEI: 50
         run: pnpm test
 
       # ── Solidity ───────────────────────────────────────────────────────────
