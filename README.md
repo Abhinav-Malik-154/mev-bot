@@ -23,6 +23,8 @@
 
 ![Dashboard Preview](docs/dashboard-preview.png)
 
+![Dashboard Preview](docs/dashboard-preview2.png)
+
 *Dashboard running at `http://localhost:3000` — dark theme, live WebSocket updates, opportunity tracker*
 
 ---
