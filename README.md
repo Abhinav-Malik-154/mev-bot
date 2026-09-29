@@ -27,6 +27,37 @@
 
 ---
 
+## Quick Start
+
+This project runs with Node.js and pnpm.
+
+```bash
+cd mev-bot
+pnpm install
+cp .env.example .env
+```
+
+Add the required RPC and wallet values to `.env`, then start the bot and
+dashboard together:
+
+```bash
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser. The
+dashboard is served by the same process as the bot, so no separate dashboard
+command is needed.
+
+For a safe mainnet observation run, use:
+
+```bash
+pnpm dev:mainnet-readonly
+```
+
+See [Dashboard setup](docs/README.md) for the dashboard-only startup details.
+
+---
+
 ## 🧠 What This Is
 
 Maximal Extractable Value (MEV) refers to profit extracted by reordering, including, or excluding transactions within a block. This bot monitors the Ethereum mempool via a persistent WebSocket connection, identifies large pending Uniswap V2 swaps that will create temporary price discrepancies between liquidity pools, and atomically exploits those discrepancies before the block is finalized — capturing the difference as profit and routing it back to the operator's wallet.
