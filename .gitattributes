@@ -11,6 +11,3 @@ contracts/lib/** linguist-vendored
 # toolchain, but it is generated from rust/amm-math/src/lib.rs, not authored.
 rust/amm-math/pkg/** linguist-generated
 
-# Font Awesome webfonts shipped for the dashboard — third-party assets.
-# The .svg faces alone are ~1.7 MB and are not hand-written source.
-public/fonts/** linguist-vendored
