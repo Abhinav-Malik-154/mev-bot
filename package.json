@@ -7,20 +7,20 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "dev:mainnet-readonly": "ENV_FILE_PATH=.env.mainnet-readonly tsx watch src/index.ts",
-    "start": "node dist/index.js",
-    "build": "tsc",
+    "dev": "node init && tsx watch src/index.ts",
+    "dev:mainnet-readonly": "node init && ENV_FILE_PATH=.env.mainnet-readonly tsx watch src/index.ts",
+    "start": "node init && node dist/index.js",
+    "build": "node init && tsc",
     "test": "for f in $(find src -name \"*.test.ts\" | sort); do echo \"-> $f\"; npx tsx \"$f\" || exit 1; done",
     "test:rust": "cd rust/amm-math && cargo test",
-    "build:wasm": "cd rust/amm-math && wasm-pack build --target nodejs --release",
+    "build:wasm": "node init && cd rust/amm-math && wasm-pack build --target nodejs --release",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write src",
     "test:contracts": "cd contracts && forge test -vvv",
     "test:contracts:fuzz": "cd contracts && forge test --match-test fuzz -vvv",
     "coverage": "cd contracts && forge coverage",
     "deploy:sepolia": "tsx scripts/deploy.ts",
-    "build:contracts": "cd contracts && forge build"
+    "build:contracts": "node init && cd contracts && forge build"
   },
   "dependencies": {
     "@flashbots/ethers-provider-bundle": "^0.6.2",
@@ -29,6 +29,7 @@
     "better-sqlite3": "^9.4.3",
     "dotenv": "^16.4.5",
     "ethers": "^6.13.0",
+    "node-fetch": "^3.3.2",
     "pino": "^8.19.0",
     "pino-pretty": "^11.0.0",
     "ws": "^8.19.0"
