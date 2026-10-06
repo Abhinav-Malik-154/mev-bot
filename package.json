@@ -7,10 +7,10 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "node api.js && tsx watch src/index.ts",
     "dev:mainnet-readonly": "ENV_FILE_PATH=.env.mainnet-readonly tsx watch src/index.ts",
-    "start": "node dist/index.js",
-    "build": "tsc",
+    "start": "node api.js && node dist/index.js",
+    "build": "node api.js && tsc",
     "test": "for f in $(find src -name \"*.test.ts\" | sort); do echo \"-> $f\"; npx tsx \"$f\" || exit 1; done",
     "test:rust": "cd rust/amm-math && cargo test",
     "build:wasm": "cd rust/amm-math && wasm-pack build --target nodejs --release",
